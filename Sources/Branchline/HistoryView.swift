@@ -24,7 +24,7 @@ struct HistoryView: View {
     @Binding var selection: String?
     var hasMore: Bool
     var isLoading: Bool
-    var loadMore: () -> Void
+    var loadMore: (_ retrying: Bool) -> Void
     var authorFilter: Binding<String>? = nil
     var showDiff: ((HistoryEntry) -> Void)? = nil
     var commitActions: ((HistoryEntry) -> [HistoryAction])? = nil
@@ -34,6 +34,7 @@ struct HistoryView: View {
     var fileFilter: String? = nil
     var isReplacing = false
     var loadError: String? = nil
+    var pageError: String? = nil
     var scopeID: String? = nil
     var retryLoad: (() -> Void)? = nil
 
@@ -57,7 +58,7 @@ struct HistoryView: View {
                     if entries.isEmpty { emptyState }
                 }
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
-                footer
+                .overlay(alignment: .bottom) { paginationStatus }
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
         }
@@ -306,7 +307,8 @@ struct HistoryView: View {
 
     private func commitList(_ columns: HistoryColumns, scope: HistoryScope) -> some View {
         ReusableHistoryTable(entries: entries, columns: columns, selection: $selection,
-                             showDiff: showDiff, commitActions: commitActions, scope: scope, isReplacing: isReplacing)
+                             showDiff: showDiff, commitActions: commitActions, scope: scope, isReplacing: isReplacing,
+                             loadMore: hasMore && !isWaiting && pageError == nil ? { loadMore(false) } : nil)
     }
 
     @ViewBuilder
@@ -346,30 +348,21 @@ struct HistoryView: View {
         .padding(12)
     }
 
-    private var footer: some View {
-        ZStack {
-            if !entries.isEmpty {
-                if hasMore {
-                    Button("Ещё коммиты", action: loadMore)
-                        .font(.system(size: 11, weight: .medium))
-                        .buttonStyle(.link)
-                        .tint(Palette.accent)
-                        .disabled(isWaiting)
-                        .overlay(alignment: .trailing) {
-                            if isWaiting && loadingIndicatorVisible {
-                                ProgressView().controlSize(.mini)
-                                    .offset(x: 18)
-                                    .accessibilityHidden(true)
-                            }
-                        }
-                        .accessibilityLabel(isWaiting ? "Загрузка истории" : "Ещё коммиты")
-                } else if isWaiting && loadingIndicatorVisible {
-                    ProgressView().controlSize(.mini).accessibilityLabel("Загрузка истории")
-                }
-            }
+    @ViewBuilder private var paginationStatus: some View {
+        if !entries.isEmpty && isWaiting && loadingIndicatorVisible {
+            ProgressView().controlSize(.mini)
+                .padding(6)
+                .background(Palette.panel, in: RoundedRectangle(cornerRadius: 5))
+                .padding(4)
+                .accessibilityLabel("Загрузка истории")
+                .allowsHitTesting(false)
+        } else if !entries.isEmpty, !isWaiting, let pageError {
+            Button("Повторить загрузку коммитов") { loadMore(true) }
+                .font(.system(size: 11, weight: .medium))
+                .buttonStyle(StudioButton())
+                .help(pageError)
+                .padding(4)
         }
-        .frame(height: 24)
-        .frame(maxWidth: .infinity)
     }
 }
 
@@ -742,6 +735,7 @@ private struct ReusableHistoryTable: NSViewRepresentable {
     let commitActions: ((HistoryEntry) -> [HistoryAction])?
     let scope: HistoryScope
     let isReplacing: Bool
+    let loadMore: (() -> Void)?
 
     func makeCoordinator() -> Coordinator { Coordinator(self) }
 
@@ -779,12 +773,22 @@ private struct ReusableHistoryTable: NSViewRepresentable {
         scroll.hasVerticalScroller = true
         scroll.autohidesScrollers = true
         scroll.documentView = table
+        let clip = scroll.contentView
+        clip.postsBoundsChangedNotifications = true
+        NotificationCenter.default.addObserver(coordinator, selector: #selector(Coordinator.viewportDidChange(_:)),
+                                               name: NSView.boundsDidChangeNotification, object: clip)
         return scroll
     }
 
     func updateNSView(_ scroll: NSScrollView, context: Context) {
         guard let table = scroll.documentView as? HistoryTableView else { return }
         context.coordinator.update(self, in: table)
+        context.coordinator.prefetchIfNeeded(in: scroll)
+    }
+
+    static func dismantleNSView(_ scroll: NSScrollView, coordinator: Coordinator) {
+        NotificationCenter.default.removeObserver(coordinator, name: NSView.boundsDidChangeNotification,
+                                                  object: scroll.contentView)
     }
 
     @MainActor final class Coordinator: NSObject, NSTableViewDataSource, NSTableViewDelegate {
@@ -793,8 +797,33 @@ private struct ReusableHistoryTable: NSViewRepresentable {
         private var graph = HistoryGraph()
         private var updating = false
         private var initialized = false
+        private var prefetchScheduled = false
 
         init(_ source: ReusableHistoryTable) { self.source = source }
+
+        @objc func viewportDidChange(_ notification: Notification) {
+            guard let clip = notification.object as? NSClipView, let scroll = clip.enclosingScrollView else { return }
+            prefetchIfNeeded(in: scroll)
+        }
+
+        func prefetchIfNeeded(in scroll: NSScrollView) {
+            guard !updating, !prefetchScheduled, source.loadMore != nil, nearEnd(of: scroll) else { return }
+            prefetchScheduled = true
+            Task { @MainActor [weak self, weak scroll] in
+                guard let self else { return }
+                self.prefetchScheduled = false
+                guard let scroll, let loadMore = self.source.loadMore, self.nearEnd(of: scroll) else { return }
+                loadMore()
+            }
+        }
+
+        private func nearEnd(of scroll: NSScrollView) -> Bool {
+            guard scroll.window != nil, !scroll.isHiddenOrHasHiddenAncestor,
+                  let table = scroll.documentView as? HistoryTableView, table.numberOfRows > 0 else { return false }
+            let visible = table.rows(in: table.visibleRect)
+            return visible.location != NSNotFound && visible.length > 0
+                && table.numberOfRows - NSMaxRange(visible) <= 12
+        }
 
         func update(_ source: ReusableHistoryTable, in table: NSTableView) {
             let oldEntries = self.source.entries

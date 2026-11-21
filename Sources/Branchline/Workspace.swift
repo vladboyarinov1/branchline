@@ -127,6 +127,7 @@ final class Workspace {
     private(set) var isHistoryLoading = false
     private(set) var isHistoryReplacing = false
     private(set) var historyError: String?
+    private(set) var historyPageError: String?
     private(set) var isDetailLoading = false
     private(set) var isExtrasLoading = false
     private(set) var hasMore = false
@@ -152,6 +153,7 @@ final class Workspace {
     @ObservationIgnored private var draftKey: String?
     @ObservationIgnored private var extrasTask: Task<Void, Never>?
     @ObservationIgnored private var restoreHistoryCount = 0
+    @ObservationIgnored private var historyOffset = 0
     @ObservationIgnored private var loadedHistoryQuery: HistoryQuery?
     @ObservationIgnored private var commitSelectionAnchor: CommitSelectionAnchor?
     @ObservationIgnored private var updateTask: Task<Void, Never>?
@@ -249,11 +251,11 @@ final class Workspace {
             if watcher?.isRunning != true { startWatching(git) }
             // Read the remembered file while status checks the rest of the working tree.
             let restoringPreview = initialSnapshot == nil && activity == nil && focusIsWorkingFile ? focus : nil
-            if let restoringPreview { preview(restoringPreview.file, restoringPreview.context) }
+            if let restoringPreview { selectPatch(restoringPreview.file, restoringPreview.context) }
             if mode == .history && comparedRef == nil && entries.isEmpty { isHistoryLoading = true }
             refresh(.everything, snapshot: initialSnapshot, restoringPreview: restoringPreview)
             if mode == .history && comparedRef == nil && !focusIsWorkingFile { queueDetails(preferred: focus) }
-            if let focus, comparedRef != nil { preview(focus.file, focus.context) }
+            if let focus, comparedRef != nil { selectPatch(focus.file, focus.context) }
         } else {
             watcher = nil
             watchedRefresh?.cancel()
@@ -296,7 +298,7 @@ final class Workspace {
             clearPreview()
             return
         }
-        preview(file, workingContext(for: file))
+        selectPatch(file, workingContext(for: file))
     }
 
     func activate(_ value: WorkspaceMode) {
@@ -329,6 +331,7 @@ final class Workspace {
         isHistoryLoading = false
         isHistoryReplacing = false
         historyError = nil
+        historyPageError = nil
         detail = nil
         detailError = nil
         if !keepPreview { clearPreview() }
@@ -430,6 +433,7 @@ final class Workspace {
         if amend && !canEnableAmend { amend = false }
         guard isFront else { return }
         hasWorkingStatus = true
+        projectFiles?.refreshPreview(affectedBy: changes)
         reconcileCommitSelection(with: snapshot)
         let hasConflicts = operation != nil && snapshot.files.contains(where: { $0.unstaged == .conflicted })
         let switchToChanges = hasConflicts && activity != nil && mode != .changes
@@ -501,8 +505,9 @@ final class Workspace {
         return file.unstaged != nil ? .unstaged : .staged
     }
 
-    func loadMore() {
-        guard hasMore, !isHistoryLoading else { return }
+    func loadMore(retrying: Bool) {
+        guard hasMore, !isHistoryLoading, !isHistoryReplacing, !entries.isEmpty,
+              historyPageError == nil || retrying else { return }
         queueHistory(append: true)
     }
 
@@ -518,11 +523,13 @@ final class Workspace {
         let author = historyAuthor
         let filePath = historyPath
         let requested = HistoryQuery(ref: ref, search: query, author: author, path: filePath)
+        if append && requested != loadedHistoryQuery { return }
         let replacing = replacing || debounce || isHistoryReplacing || (!entries.isEmpty && requested != loadedHistoryQuery)
-        let start = append ? entries.count : 0
+        let start = append ? historyOffset : 0
         let take = append || replacing ? pageSize : min(896, max(pageSize, restoreHistoryCount, entries.count))
         restoreHistoryCount = 0
         historyError = nil
+        historyPageError = nil
         isHistoryLoading = true
         isHistoryReplacing = replacing
         historyTask = Task {
@@ -548,6 +555,7 @@ final class Workspace {
                                      return ref.name
                                  }, isMerge: commit.parents.count > 1)
                 }
+                historyOffset = start + page.count
                 hasMore = commits.count > take
                 if append {
                     let existing = Set(entries.map(\.id))
@@ -567,7 +575,9 @@ final class Workspace {
             } catch is CancellationError {
             } catch {
                 guard !Task.isCancelled else { return }
-                if replacing || entries.isEmpty {
+                if append {
+                    historyPageError = error.localizedDescription
+                } else if replacing || entries.isEmpty {
                     entries = []
                     selection = nil
                     hasMore = false
@@ -582,6 +592,7 @@ final class Workspace {
 
     func selectCommit(_ hash: String?, revealDiff: Bool = false) {
         guard !isHistoryReplacing, hash != selection || revealDiff else { return }
+        projectFiles?.closePreview()
         selection = hash
         queueDetails()
     }
@@ -671,13 +682,19 @@ final class Workspace {
     }
 
     func preview(_ file: GitFile, _ context: GitPatchContext) {
+        projectFiles?.closePreview()
+        selectPatch(file, context)
+    }
+
+    private func selectPatch(_ file: GitFile, _ context: GitPatchContext) {
         fileSelectionRevision &+= 1
         loadPreview(FileFocus(file: file, context: context), force: false)
     }
 
-    func previewWorkingFile(at path: String) {
-        guard let file = status?.files.first(where: { $0.path == path }) else { return }
+    func previewWorkingFile(at path: String) -> Bool {
+        guard let file = status?.files.first(where: { $0.path == path }) else { return false }
         preview(file, workingContext(for: file))
+        return true
     }
 
     private func loadPreview(_ target: FileFocus, force: Bool) {

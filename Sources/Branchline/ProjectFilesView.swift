@@ -14,6 +14,8 @@ final class ProjectFilesModel {
     }
 
     fileprivate private(set) var selectedPath: String?
+    private(set) var previewPath: String?
+    private(set) var previewRevision: UInt = 0
     fileprivate private(set) var expanded: Set<String> = []
     fileprivate private(set) var listings: [String: ProjectListing] = [:]
     @ObservationIgnored private var loads: [String: Task<Void, Never>] = [:]
@@ -23,6 +25,17 @@ final class ProjectFilesModel {
     func refresh() {
         guard visible else { return }
         load("", refreshing: true)
+        if previewPath != nil { previewRevision &+= 1 }
+    }
+
+    func refreshPreview(affectedBy changes: RepositoryChanges) {
+        guard visible, let previewPath,
+              changes.affectsWorkingPatch(for: previewPath, originalPath: nil) else { return }
+        previewRevision &+= 1
+    }
+
+    func closePreview() {
+        if previewPath != nil { previewPath = nil }
     }
 
     fileprivate func loadRoot() {
@@ -36,16 +49,22 @@ final class ProjectFilesModel {
     }
 
     fileprivate func select(_ entry: ProjectFileEntry) {
+        selectRow(entry)
+        if entry.kind == .directory {
+            setExpanded(entry.path, to: !expanded.contains(entry.path))
+        }
+    }
+
+    private func selectRow(_ entry: ProjectFileEntry) {
         selectedPath = entry.path
-        guard entry.kind == .directory else { return }
-        setExpanded(entry.path, to: !expanded.contains(entry.path))
+        if entry.kind != .directory { previewPath = entry.path }
     }
 
     fileprivate func navigate(_ key: KeyEquivalent) -> ProjectFileEntry? {
         let rows = rows
         guard let first = rows.first else { return nil }
         guard let index = rows.firstIndex(where: { $0.id == selectedPath }) else {
-            selectedPath = first.id
+            selectRow(first.entry)
             return first.entry
         }
         let current = rows[index].entry
@@ -75,7 +94,7 @@ final class ProjectFilesModel {
             return nil
         }
         if let destination {
-            selectedPath = destination.path
+            selectRow(destination)
         }
         return destination
     }
@@ -180,21 +199,10 @@ private struct ProjectFileRow: Identifiable {
 
 private enum ProjectDirectory {
     static func read(root: URL, path: String) throws -> [ProjectFileEntry] {
-        let flags = O_RDONLY | O_DIRECTORY | O_CLOEXEC
-        var descriptor = root.withUnsafeFileSystemRepresentation { name in
-            name.map { open($0, flags) } ?? -1
-        }
-        guard descriptor >= 0 else { throw filesystemError() }
-        for component in path.split(separator: "/") {
-            // Walk from the repository's open directory, never through a child symlink.
-            let next = String(component).withCString { openat(descriptor, $0, flags | O_NOFOLLOW) }
-            let failed = next < 0 ? filesystemError() : nil
-            close(descriptor)
-            if let failed { throw failed }
-            descriptor = next
-        }
+        let components = try ProjectFileSystem.components(path)
+        let descriptor = try ProjectFileSystem.openDirectory(root: root, components: components[...])
         guard let stream = fdopendir(descriptor) else {
-            let error = filesystemError()
+            let error = ProjectFileSystem.error()
             close(descriptor)
             throw error
         }
@@ -205,7 +213,7 @@ private enum ProjectDirectory {
             try Task.checkCancellation()
             errno = 0
             guard let record = readdir(stream) else {
-                if errno != 0 { throw filesystemError() }
+                if errno != 0 { throw ProjectFileSystem.error() }
                 break
             }
             let length = Int(record.pointee.d_namlen)
@@ -243,15 +251,10 @@ private enum ProjectDirectory {
         default: return .other
         }
     }
-
-    private static func filesystemError() -> POSIXError {
-        POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO)
-    }
 }
 
 struct ProjectFilesView: View {
     let model: ProjectFilesModel
-    let onSelect: (String) -> Void
     @FocusState private var treeFocused: Bool
 
     var body: some View {
@@ -310,7 +313,6 @@ struct ProjectFilesView: View {
                 .onKeyPress(keys: [.upArrow, .downArrow, .leftArrow, .rightArrow], phases: [.down, .repeat]) { key in
                     guard key.modifiers.intersection([.command, .control, .option, .shift]).isEmpty else { return .ignored }
                     if let destination = model.navigate(key.key) {
-                        if destination.kind == .file { onSelect(destination.path) }
                         scroll.scrollTo(destination.path)
                     }
                     return .handled
@@ -342,7 +344,6 @@ struct ProjectFilesView: View {
         return Button {
             treeFocused = true
             model.select(entry)
-            if entry.kind == .file { onSelect(entry.path) }
         } label: {
             HStack(spacing: 5) {
                 if isFolder {

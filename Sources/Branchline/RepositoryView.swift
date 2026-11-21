@@ -479,7 +479,7 @@ struct RepositoryView<ProjectTabs: View>: View {
                 } else if showsChangeSidebar {
                     panel {
                         if let project = workspace.projectFiles, projectVisible {
-                            ProjectFilesView(model: project, onSelect: workspace.previewWorkingFile)
+                            ProjectFilesView(model: project)
                         } else { changesPane }
                     }
                         .frame(minWidth: 244, idealWidth: 276, maxWidth: 310)
@@ -515,6 +515,7 @@ struct RepositoryView<ProjectTabs: View>: View {
                         branchesVisible: branchesVisible, toggleBranches: { branchesVisible.toggle() },
                         clearFileFilter: workspace.clearFileHistory, fileFilter: workspace.historyPath,
                         isReplacing: workspace.isHistoryReplacing, loadError: workspace.historyError,
+                        pageError: workspace.historyPageError,
                         scopeID: workspace.scope, retryLoad: { workspace.refresh(userInitiated: true) })
                 .frame(minWidth: 300, maxWidth: .infinity)
             inspector.frame(minWidth: 210, idealWidth: 242, maxWidth: 305)
@@ -828,7 +829,9 @@ struct RepositoryView<ProjectTabs: View>: View {
 
     private var patchPane: some View {
         VStack(spacing: 0) {
-            if let focus = workspace.focus {
+            if projectVisible, let project = workspace.projectFiles, let path = project.previewPath {
+                ProjectFilePreview(root: project.root, path: path, revision: project.previewRevision)
+            } else if let focus = workspace.focus {
                 let labels = workspace.patchLabels
                 DiffView(focus: focus, patch: workspace.patch, oldLabel: labels.0, newLabel: labels.1,
                          fileNavigation: fileNavigation(for: focus), error: workspace.patchError,
@@ -1343,6 +1346,8 @@ struct RepositoryView<ProjectTabs: View>: View {
             if canUpdate { workspace.pull() }
         case .diff:
             handledCommitFocus = commitFocusRequest
+            if projectVisible, let path = workspace.projectFiles?.previewPath,
+               !workspace.previewWorkingFile(at: path) { return }
             if workspace.focus == nil && workspace.mode == .changes { workspace.selectInitialChange() }
             if workspace.focus != nil { diffFocusRequest &+= 1 }
         case .stage:

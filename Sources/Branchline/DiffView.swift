@@ -74,7 +74,8 @@ struct DiffView: View {
         let syntax = highlightsSyntax ? visible.flatMap { DiffSyntax(path: $0.target.file.path) } : nil
         let request = DiffPreviewRequest(target: target, patch: error == nil ? patch : nil, position: fileNavigation?.position)
         VStack(spacing: 0) {
-            fileHeading(displayedTarget.file, pending: pending, colors: colors)
+            CodeFileHeading(file: displayedTarget.file, pending: pending,
+                            loadingLabel: "Загрузка сравнения", colors: colors)
             StudioRule()
             toolbar(visible, position: showsPriorSelection ? visible?.position : request.position,
                     enabled: !showsPriorSelection, colors: colors)
@@ -175,40 +176,6 @@ struct DiffView: View {
             pendingFileStep = nil
         }
         preview = DiffPreview(target: request.target, patch: patch, position: request.position, document: document)
-    }
-
-    private func fileHeading(_ file: GitFile, pending: Bool, colors: DiffColors) -> some View {
-        HStack(spacing: 7) {
-            Text(file.name)
-                .font(.system(size: 12, weight: .semibold))
-                .lineLimit(1)
-                .truncationMode(.middle)
-                .layoutPriority(1)
-            if !file.directory.isEmpty {
-                Text(file.directory)
-                    .font(.system(size: 11))
-                    .foregroundStyle(Color(nsColor: colors.muted))
-                    .lineLimit(1)
-                    .truncationMode(.middle)
-            }
-            Spacer(minLength: 0)
-            DeferredVisibility(isPending: pending) { showProgress in
-                ZStack {
-                    if showProgress {
-                        ProgressView()
-                            .controlSize(.small)
-                            .tint(Color(nsColor: colors.muted))
-                            .scaleEffect(0.65)
-                            .accessibilityLabel("Загрузка сравнения")
-                    }
-                }
-                .frame(width: 25, height: 23)
-            }
-        }
-        .help(file.path)
-        .padding(.horizontal, WorkbenchLayout.panelInset)
-        .frame(height: WorkbenchLayout.panelHeaderHeight)
-        .background(Color(nsColor: colors.chrome))
     }
 
     private func toolbar(_ preview: DiffPreview?, position: DiffFilePosition?, enabled: Bool, colors: DiffColors) -> some View {
@@ -423,6 +390,137 @@ struct DiffView: View {
     }
 }
 
+struct ProjectFilePreview: View {
+    let root: URL
+    let path: String
+    let revision: UInt
+    @AppStorage(DiffView.syntaxHighlightingKey) private var highlightsSyntax = true
+    @Environment(\.colorScheme) private var colorScheme
+    @State private var loaded: Loaded?
+
+    private struct Request: Equatable {
+        let root: URL
+        let path: String
+        let revision: UInt
+    }
+
+    private struct Loaded {
+        let path: String
+        let content: Content
+    }
+
+    private enum Content: Sendable {
+        case document(DiffDocument)
+        case unsupported
+        case failed(String)
+    }
+
+    var body: some View {
+        let colors = DiffColors(dark: colorScheme == .dark)
+        let shownPath = loaded?.path ?? path
+        let request = Request(root: root, path: path, revision: revision)
+        VStack(spacing: 0) {
+            CodeFileHeading(file: GitFile(path: shownPath), pending: loaded?.path != path,
+                            loadingLabel: "Загрузка файла", colors: colors)
+            StudioRule()
+            switch loaded?.content {
+            case .document(let document) where document.rowCount > 0:
+                ProjectFileTable(document: document, path: shownPath, colors: colors,
+                                 syntax: highlightsSyntax ? DiffSyntax(path: shownPath) : nil)
+                if document.isTruncated {
+                    Text("Предпросмотр сокращён.")
+                        .font(.system(size: 11))
+                        .foregroundStyle(Color(nsColor: colors.muted))
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .padding(.horizontal, WorkbenchLayout.panelInset)
+                        .padding(.vertical, 6)
+                        .background(Color(nsColor: colors.chrome))
+                }
+            case .document:
+                EmptyPanel(icon: "doc", title: "Пустой файл")
+            case .unsupported:
+                EmptyPanel(icon: "doc", title: "Для этого файла нет текстового предпросмотра")
+            case .failed(let reason):
+                EmptyPanel(icon: "exclamationmark.circle", title: "Не удалось прочитать файл", subtitle: reason)
+            case nil:
+                Color.clear.accessibilityHidden(true)
+            }
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .foregroundStyle(colorScheme == .dark ? Color(nsColor: colors.text) : .primary)
+        .background(Color(nsColor: colors.canvas))
+        .task(id: request) { await load(request) }
+    }
+
+    private func load(_ request: Request) async {
+        guard !Task.isCancelled else { return }
+        let read = Task.detached(priority: .userInitiated) {
+            switch try ProjectFileContent.read(root: request.root, path: request.path) {
+            case .text(let text, let truncated):
+                return Content.document(DiffDocument(source: text, truncated: truncated))
+            case .unsupported:
+                return Content.unsupported
+            }
+        }
+        let result = await withTaskCancellationHandler {
+            await read.result
+        } onCancel: {
+            read.cancel()
+        }
+        guard !Task.isCancelled else { return }
+        switch result {
+        case .success(let content):
+            if loaded?.path == request.path,
+               case .document(let previous) = loaded?.content,
+               case .document(let current) = content, current.matchesSource(previous) { return }
+            loaded = Loaded(path: request.path, content: content)
+        case .failure(let error):
+            loaded = Loaded(path: request.path, content: .failed(error.localizedDescription))
+        }
+    }
+}
+
+private struct CodeFileHeading: View {
+    let file: GitFile
+    let pending: Bool
+    let loadingLabel: String
+    let colors: DiffColors
+
+    var body: some View {
+        HStack(spacing: 7) {
+            Text(file.name)
+                .font(.system(size: 12, weight: .semibold))
+                .lineLimit(1)
+                .truncationMode(.middle)
+                .layoutPriority(1)
+            if !file.directory.isEmpty {
+                Text(file.directory)
+                    .font(.system(size: 11))
+                    .foregroundStyle(Color(nsColor: colors.muted))
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+            }
+            Spacer(minLength: 0)
+            DeferredVisibility(isPending: pending) { showProgress in
+                ZStack {
+                    if showProgress {
+                        ProgressView()
+                            .controlSize(.small)
+                            .tint(Color(nsColor: colors.muted))
+                            .scaleEffect(0.65)
+                            .accessibilityLabel(loadingLabel)
+                    }
+                }
+                .frame(width: 25, height: 23)
+            }
+        }
+        .help(file.path)
+        .padding(.horizontal, WorkbenchLayout.panelInset)
+        .frame(height: WorkbenchLayout.panelHeaderHeight)
+        .background(Color(nsColor: colors.chrome))
+    }
+}
+
 private struct DiffSplitGeometry {
     static let lineWidth: CGFloat = 1
     static let handleWidth: CGFloat = 11
@@ -624,11 +722,12 @@ private final class DiffSplitHandleView: NSView {
 
 private struct DiffPreviewKey: Equatable {
     let path: String
-    let identity: FileFocus.ID
+    let identity: FileFocus.ID?
 
     func keepsViewport(for target: DiffPreviewKey) -> Bool {
         guard path == target.path else { return false }
-        return identity == target.identity || (identity.context.isWorkingFile && target.identity.context.isWorkingFile)
+        return identity == target.identity ||
+            (identity?.context.isWorkingFile == true && target.identity?.context.isWorkingFile == true)
     }
 }
 
@@ -736,10 +835,11 @@ private struct DiffJump: Equatable {
 }
 
 private enum DiffLineKind: Sendable {
-    case context, addition, deletion, hunk, metadata
+    case source, context, addition, deletion, hunk, metadata
 
     var label: String {
         switch self {
+        case .source: "Код"
         case .context: "Контекст"
         case .addition: "Добавлено"
         case .deletion: "Удалено"
@@ -820,6 +920,7 @@ private struct DiffDocument: Sendable {
     let additions: Int
     let deletions: Int
     let isBinary: Bool
+    let isSource: Bool
     let isTruncated: Bool
     let longestLine: Int
     let numberDigits: Int
@@ -959,9 +1060,43 @@ private struct DiffDocument: Sendable {
         self.additions = additions
         self.deletions = deletions
         self.isBinary = isBinary
+        self.isSource = false
         self.isTruncated = isTruncated
         self.longestLine = longestLine
         self.numberDigits = max(3, String(largestNumber).count)
+    }
+
+    init(source: String, truncated: Bool) {
+        var rows: [DiffRow] = []
+        var longestLine = 0
+        var isTruncated = truncated
+        source.enumerateSubstrings(in: source.startIndex..<source.endIndex, options: [.byLines, .substringNotRequired]) { _, range, _, stop in
+            if Task.isCancelled || rows.count >= Self.previewLineLimit {
+                isTruncated = true
+                stop = true
+                return
+            }
+            let line = source[range]
+            let columns = line.utf16.count + 3 * line.utf8.lazy.filter { $0 == 9 }.count
+            longestLine = max(longestLine, min(columns, Self.longLineLimit * 4))
+            if columns > Self.longLineLimit { isTruncated = true }
+            rows.append(DiffRow(kind: .source, textRange: range, oldNumber: rows.count + 1))
+        }
+        self.patch = source
+        self.rows = rows
+        self.pairs = []
+        self.hunks = []
+        self.additions = 0
+        self.deletions = 0
+        self.isBinary = false
+        self.isSource = true
+        self.isTruncated = isTruncated
+        self.longestLine = longestLine
+        self.numberDigits = max(3, String(rows.count).count)
+    }
+
+    func matchesSource(_ other: DiffDocument) -> Bool {
+        isTruncated == other.isTruncated && patch.utf8.elementsEqual(other.patch.utf8)
     }
 
     var rowCount: Int { rows.count }
@@ -1137,6 +1272,20 @@ private struct DiffTableSurface: NSViewRepresentable {
     }
 }
 
+private struct ProjectFileTable: NSViewRepresentable {
+    let document: DiffDocument
+    let path: String
+    let colors: DiffColors
+    let syntax: DiffSyntax?
+
+    func makeNSView(context: Context) -> DiffSurfaceView { DiffSurfaceView() }
+
+    func updateNSView(_ view: DiffSurfaceView, context: Context) {
+        view.configure(document: document, key: DiffPreviewKey(path: path, identity: nil), mode: .unified,
+                       colors: colors, oldLabel: "Содержимое файла", newLabel: "", syntax: syntax, onScroll: { _ in })
+    }
+}
+
 private final class DiffSurfaceView: NSView, NSTableViewDataSource, NSTableViewDelegate {
     private let left = DiffTableView()
     private let right = DiffTableView()
@@ -1231,7 +1380,7 @@ private final class DiffSurfaceView: NSView, NSTableViewDataSource, NSTableViewD
     func configure(document: DiffDocument, key: DiffPreviewKey? = nil, mode: DiffLayout, colors: DiffColors,
                    oldLabel: String, newLabel: String, syntax: DiffSyntax? = nil, onScroll: @escaping (Int) -> Void) {
         self.onScroll = onScroll
-        left.setAccessibilityLabel(mode == .split ? oldLabel : "Сравнение файлов")
+        left.setAccessibilityLabel(mode == .split || document.isSource ? oldLabel : "Сравнение файлов")
         right.setAccessibilityLabel(newLabel)
         let previous = self.document
         let changedDocument = document.id != previous?.id
@@ -1312,7 +1461,8 @@ private final class DiffSurfaceView: NSView, NSTableViewDataSource, NSTableViewD
         }
         guard let document else { return }
         let gutters = CGFloat(document.numberDigits) * DiffCellView.glyphWidth + 13
-        let contentWidth = CGFloat(document.longestLine) * DiffCellView.glyphWidth + gutters * (split ? 1 : 2) + 40
+        let gutterColumns: CGFloat = split || document.isSource ? 1 : 2
+        let contentWidth = CGFloat(document.longestLine) * DiffCellView.glyphWidth + gutters * gutterColumns + 40
         for (table, scroll) in [(left, leftScroll), (right, rightScroll)] {
             let tableWidth = ceil(max(scroll.contentSize.width, contentWidth))
             guard table.tableColumns[0].width != tableWidth else { continue }
@@ -1556,7 +1706,11 @@ private final class DiffCellView: NSView {
             setAccessibilityElement(line.kind != .hunk || showHeader)
             let number = (isRight ? line.newNumber : line.oldNumber) ?? line.newNumber
             setAccessibilityRole(.staticText)
-            setAccessibilityLabel(number.map { "Строка \($0). \(line.kind.label)" } ?? line.kind.label)
+            if line.kind == .source, let number {
+                setAccessibilityLabel("Строка \(number)")
+            } else {
+                setAccessibilityLabel(number.map { "Строка \($0). \(line.kind.label)" } ?? line.kind.label)
+            }
             if line.kind == .hunk {
                 setAccessibilityValue(line.hunkContext.map(String.init))
             } else {
@@ -1583,7 +1737,14 @@ private final class DiffCellView: NSView {
         }
         let gutterWidth = CGFloat(numberDigits) * Self.glyphWidth + 13
         let foreground = colors.ink(line.kind)
-        let columns: [Int?] = mode == .unified ? [line.oldNumber, line.newNumber] : [isRight ? line.newNumber : line.oldNumber]
+        let columns: [Int?]
+        if line.kind == .source {
+            columns = [line.oldNumber]
+        } else if mode == .unified {
+            columns = [line.oldNumber, line.newNumber]
+        } else {
+            columns = [isRight ? line.newNumber : line.oldNumber]
+        }
         let gutter = colors.gutterBackground(line.kind)
         for (index, number) in columns.enumerated() {
             guard let number else { continue }
@@ -1599,7 +1760,7 @@ private final class DiffCellView: NSView {
         }
         let markerX = CGFloat(columns.count) * gutterWidth
         (line.kind.marker as NSString).draw(at: NSPoint(x: markerX, y: 3), withAttributes: [.font: Self.markerFont, .foregroundColor: foreground])
-        let contentX = line.kind == .metadata ? 10 : markerX + 17
+        let contentX = line.kind == .metadata ? 10 : markerX + (line.kind == .source ? 5 : 17)
         drawSource(line, at: NSPoint(x: contentX, y: 3))
     }
 
