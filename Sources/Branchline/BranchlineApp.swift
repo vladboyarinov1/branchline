@@ -4,24 +4,17 @@ import SwiftUI
 @main
 struct BranchlineApp: App {
     @State private var desk = WorkspaceTabs()
-    @State private var updates = AppUpdater()
     @AppStorage(DiffView.syntaxHighlightingKey) private var highlightsSyntax = true
 
     var body: some Scene {
         Window("Branchline", id: "workspace") {
-            MainWindow(desk: desk, updates: updates)
+            MainWindow(desk: desk)
                 .frame(minWidth: 950, minHeight: 650)
                 .preferredColorScheme(.dark)
         }
         .windowStyle(.hiddenTitleBar)
         .defaultSize(width: 1360, height: 850)
         .commands {
-            CommandGroup(after: .appInfo) {
-                if updates.isEnabled {
-                    Button("Проверить обновления…", action: updates.checkForUpdates)
-                        .disabled(!updates.canCheck || updates.waitingForRelaunch)
-                }
-            }
             CommandGroup(replacing: .newItem) {
                 Button("Открыть репозитории…", action: desk.chooseRepository)
                     .keyboardShortcut("o")
@@ -93,15 +86,13 @@ struct BranchlineApp: App {
 
 private struct MainWindow: View {
     let desk: WorkspaceTabs
-    let updates: AppUpdater
     @Environment(\.scenePhase) private var scenePhase
     @State private var booted = false
 
     var body: some View {
         VStack(spacing: 0) {
             if let workspace = desk.active {
-                RepositoryView(workspace: workspace, openWorktree: desk.open,
-                               updates: updates, updateRestartBlocker: desk.updateRestartBlocker) {
+                RepositoryView(workspace: workspace, openWorktree: desk.open) {
                     projectTabs
                 }
                 .id(desk.activeID)
@@ -127,7 +118,6 @@ private struct MainWindow: View {
         .task {
             guard !booted else { return }
             booted = true
-            updates.start(desk: desk)
             let args = ProcessInfo.processInfo.arguments
             if let index = args.firstIndex(of: "--repo"), args.indices.contains(index + 1) {
                 desk.open(URL(fileURLWithPath: args[index + 1], isDirectory: true))
@@ -139,9 +129,6 @@ private struct MainWindow: View {
         }
         .onChange(of: scenePhase) { _, phase in
             if phase == .active, desk.active?.activity == nil { desk.active?.refresh() }
-        }
-        .onChange(of: desk.updateRestartBlocker) { _, _ in
-            updates.resumeRelaunchIfReady()
         }
         .alert(desk.notice?.title ?? "", isPresented: Binding(
             get: { desk.notice != nil }, set: { if !$0 { desk.clearNotice() } }

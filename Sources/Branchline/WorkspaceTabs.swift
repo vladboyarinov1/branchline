@@ -4,17 +4,6 @@ import Observation
 
 @MainActor @Observable
 final class WorkspaceTabs {
-    enum UpdateRestartBlocker {
-        case git, terminal
-
-        var message: String {
-            switch self {
-            case .git: "Перезапуск после завершения операции Git"
-            case .terminal: "Закройте сеансы терминала для установки обновления"
-            }
-        }
-    }
-
     struct Tab: Identifiable {
         var id: URL { root }
         let root: URL
@@ -31,12 +20,6 @@ final class WorkspaceTabs {
     @ObservationIgnored private var opening: Task<Void, Never>?
 
     var active: Workspace? { tabs.first(where: { $0.id == activeID })?.loaded }
-
-    var updateRestartBlocker: UpdateRestartBlocker? {
-        if tabs.contains(where: { $0.loaded?.activity != nil }) { return .git }
-        if tabs.contains(where: { $0.loaded?.terminalDock?.hasRunningSessions == true }) { return .terminal }
-        return nil
-    }
 
     func restore() {
         guard !restored else { return }

@@ -3,13 +3,10 @@ set -euo pipefail
 
 usage() {
     cat <<'HELP'
-Usage: Scripts/package.sh OUTPUT_DIRECTORY [--arch universal|native|arm64|x86_64] [--dmg | --release]
+Usage: Scripts/package.sh OUTPUT_DIRECTORY [--arch universal|native|arm64|x86_64] [--dmg]
 
-Builds Branchline.app. Universal and ad-hoc signing are the defaults.
+Builds an ad-hoc signed Branchline.app for local use. Universal is the default.
 Use --arch native for a faster local build, and --dmg to also create Branchline.dmg.
-Use --release to build the Developer ID-signed app for Scripts/release.sh.
-Release mode requires BRANCHLINE_SIGNING_IDENTITY, BRANCHLINE_UPDATE_FEED_URL,
-and BRANCHLINE_SPARKLE_PUBLIC_KEY.
 The output directory must not already contain the requested artifacts.
 HELP
 }
@@ -27,7 +24,6 @@ output_dir=$1
 shift
 architecture=universal
 create_dmg=false
-release=false
 while [[ $# -gt 0 ]]; do
     case "$1" in
         --arch)
@@ -42,10 +38,6 @@ while [[ $# -gt 0 ]]; do
             create_dmg=true
             shift
             ;;
-        --release)
-            release=true
-            shift
-            ;;
         *)
             usage >&2
             exit 64
@@ -56,21 +48,6 @@ done
 if [[ $(uname -s) != Darwin ]]; then
     printf '%s\n' 'Branchline can only be packaged on macOS.' >&2
     exit 69
-fi
-
-if $release; then
-    if $create_dmg || [[ $architecture != universal ]]; then
-        printf '%s\n' 'Release mode builds a universal app. Scripts/release.sh creates and notarizes the release DMG.' >&2
-        exit 64
-    fi
-    : "${BRANCHLINE_SIGNING_IDENTITY:?Set a Developer ID Application identity.}"
-    : "${BRANCHLINE_UPDATE_FEED_URL:?Set the HTTPS Sparkle feed URL.}"
-    : "${BRANCHLINE_SPARKLE_PUBLIC_KEY:?Set the Sparkle EdDSA public key.}"
-    if [[ ! $BRANCHLINE_UPDATE_FEED_URL =~ ^https://[^[:space:]]+/appcast\.xml$ ]] ||
-       [[ ! $BRANCHLINE_SPARKLE_PUBLIC_KEY =~ ^[A-Za-z0-9+/]{43}=$ ]]; then
-        printf '%s\n' 'Release mode requires an HTTPS appcast.xml URL and a base64 EdDSA public key.' >&2
-        exit 64
-    fi
 fi
 
 script_dir=$(cd -- "$(dirname -- "$0")" && pwd -P)
@@ -90,7 +67,7 @@ trap 'rm -rf -- "$stage"' EXIT
 
 if [[ $architecture == native ]]; then architecture=$(uname -m); fi
 # SwiftBuild's multi-architecture graph can omit SwiftTerm's build-information plugin.
-# Build each architecture with native SwiftPM, then join the executables for distribution.
+# Use native SwiftPM to build each architecture and combine them when requested.
 build=(swift build --build-system native --package-path "$package_dir" --configuration release --product Branchline)
 
 build_slice() {
@@ -101,26 +78,6 @@ build_slice() {
     "${build[@]}" "${args[@]}"
     bin_dir=$("${build[@]}" "${args[@]}" --show-bin-path)
     install -m 755 "$bin_dir/Branchline" "$output"
-
-    # Each slice can have different build-only paths. Normalize before lipo.
-    local app_rpath='@executable_path/../Frameworks'
-    local rpaths rpath
-    rpaths=$(otool -l "$output" | awk '/cmd LC_RPATH/ {
-        getline
-        getline
-        sub(/^[[:space:]]*path /, "")
-        sub(/ \(offset [0-9]+\)$/, "")
-        print
-    }' | sort -u)
-    if ! grep -Fxq "$app_rpath" <<< "$rpaths"; then
-        install_name_tool -add_rpath "$app_rpath" "$output"
-    fi
-    while IFS= read -r rpath; do
-        case "$rpath" in
-            ''|"$app_rpath"|/usr/lib/swift) ;;
-            /*) install_name_tool -delete_rpath "$rpath" "$output" ;;
-        esac
-    done <<< "$rpaths"
 }
 
 mkdir -p -- "$stage/disk"
@@ -133,11 +90,9 @@ if [[ $architecture == universal ]]; then
     build_slice x86_64 "$stage/Branchline-x86_64"
     xcrun lipo -create "$stage/Branchline-arm64" "$stage/Branchline-x86_64" -output "$executable"
     chmod 755 "$executable"
-    sparkle_arch=arm64
     expected_slices=(arm64 x86_64)
 else
     build_slice "$architecture" "$executable"
-    sparkle_arch=$architecture
     expected_slices=("$architecture")
 fi
 
@@ -150,19 +105,7 @@ for slice in "${expected_slices[@]}"; do
 done
 
 plutil -lint "$script_dir/Info.plist"
-info="$app/Contents/Info.plist"
-install -m 644 "$script_dir/Info.plist" "$info"
-if $release; then
-    plutil -insert SUFeedURL -string "$BRANCHLINE_UPDATE_FEED_URL" "$info"
-    plutil -insert SUPublicEDKey -string "$BRANCHLINE_SPARKLE_PUBLIC_KEY" "$info"
-    plutil -insert SUEnableAutomaticChecks -bool true "$info"
-    plutil -insert SUAllowsAutomaticUpdates -bool false "$info"
-    plutil -insert SUAutomaticallyUpdate -bool false "$info"
-    plutil -insert SUEnableSystemProfiling -bool false "$info"
-    plutil -insert SUVerifyUpdateBeforeExtraction -bool true "$info"
-    plutil -insert SURequireSignedFeed -bool true "$info"
-    plutil -insert SUSignedFeedFailureExpirationInterval -integer 0 "$info"
-fi
+install -m 644 "$script_dir/Info.plist" "$app/Contents/Info.plist"
 install -m 644 "$package_dir/ThirdParty/SwiftTerm-LICENSE.txt" "$app/Contents/Resources/SwiftTerm-LICENSE.txt"
 install -m 644 "$package_dir/ThirdParty/JetBrainsMonoNL-Regular.ttf" "$app/Contents/Resources/JetBrainsMonoNL-Regular.ttf"
 install -m 644 "$package_dir/ThirdParty/JetBrainsMono-OFL.txt" "$app/Contents/Resources/JetBrainsMono-OFL.txt"
@@ -170,36 +113,7 @@ swiftc -parse-as-library -O "$script_dir/MakeIcon.swift" -o "$stage/make-icon"
 "$stage/make-icon" "$stage/Branchline.iconset"
 iconutil --convert icns --output "$app/Contents/Resources/Branchline.icns" "$stage/Branchline.iconset"
 
-sparkle="$package_dir/.build/package-$sparkle_arch/artifacts/sparkle/Sparkle"
-framework="$app/Contents/Frameworks/Sparkle.framework"
-mkdir -p "$app/Contents/Frameworks"
-ditto "$sparkle/Sparkle.xcframework/macos-arm64_x86_64/Sparkle.framework" "$framework"
-install -m 644 "$sparkle/LICENSE" "$app/Contents/Resources/Sparkle-LICENSE.txt"
-
-if ! otool -L "$executable" | grep -Fq '@rpath/Sparkle.framework/Versions/'; then
-    printf '%s\n' 'Branchline is missing its Sparkle framework link.' >&2
-    exit 65
-fi
-
-if $release; then
-    signing=(--force --sign "$BRANCHLINE_SIGNING_IDENTITY" --timestamp --options runtime)
-    if [[ -n ${BRANCHLINE_SIGNING_KEYCHAIN:-} ]]; then
-        signing+=(--keychain "$BRANCHLINE_SIGNING_KEYCHAIN")
-    fi
-    version_dir="$framework/Versions/$(readlink "$framework/Versions/Current")"
-    for component in "$version_dir/Autoupdate" "$version_dir/Updater.app" "$version_dir/XPCServices/"*.xpc; do
-        codesign "${signing[@]}" "$component"
-    done
-    codesign "${signing[@]}" "$framework"
-    codesign "${signing[@]}" "$app"
-    signature=$(codesign -dv --verbose=4 "$app" 2>&1)
-    if ! grep -q '^Authority=Developer ID Application:' <<< "$signature"; then
-        printf '%s\n' 'Release mode must use a Developer ID Application certificate.' >&2
-        exit 65
-    fi
-else
-    codesign --force --sign - --timestamp=none "$app"
-fi
+codesign --force --sign - --timestamp=none "$app"
 codesign --verify --deep --strict "$app"
 
 if $create_dmg; then

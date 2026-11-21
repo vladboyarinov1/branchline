@@ -4,8 +4,6 @@ import SwiftUI
 struct RepositoryView<ProjectTabs: View>: View {
     @Bindable var workspace: Workspace
     let openWorktree: (URL) -> Void
-    let updates: AppUpdater
-    let updateRestartBlocker: WorkspaceTabs.UpdateRestartBlocker?
     let projectTabs: ProjectTabs
     @State private var sheet: ActionSheet?
     @State private var loadingRemotes = false
@@ -21,12 +19,10 @@ struct RepositoryView<ProjectTabs: View>: View {
     @State private var collapsedGroups: Set<ChangeGroup> = []
     @FocusState private var changesFocused: Bool
 
-    init(workspace: Workspace, openWorktree: @escaping (URL) -> Void, updates: AppUpdater,
-         updateRestartBlocker: WorkspaceTabs.UpdateRestartBlocker?, @ViewBuilder projectTabs: () -> ProjectTabs) {
+    init(workspace: Workspace, openWorktree: @escaping (URL) -> Void,
+         @ViewBuilder projectTabs: () -> ProjectTabs) {
         self.workspace = workspace
         self.openWorktree = openWorktree
-        self.updates = updates
-        self.updateRestartBlocker = updateRestartBlocker
         self.projectTabs = projectTabs()
     }
 
@@ -176,16 +172,6 @@ struct RepositoryView<ProjectTabs: View>: View {
             tool("Git Log", active: historyVisible,
                  shortcut: GitKeymap.log, action: { handle(.log) }) {
                 GitGlyph.branch.glyph(size: 16)
-            }
-            if let version = updates.availableVersion {
-                let title = updates.waitingForRelaunch
-                    ? (updateRestartBlocker?.message ?? "Перезапускаем Branchline")
-                    : "Скачать обновление \(version)…"
-                tool(title, active: false, action: updates.checkForUpdates) {
-                    Image(systemName: updates.waitingForRelaunch ? "clock" : "arrow.down.circle")
-                        .foregroundStyle(Palette.accent)
-                }
-                .disabled(!updates.canCheck || updates.waitingForRelaunch)
             }
         }
         .padding(.horizontal, 3)
