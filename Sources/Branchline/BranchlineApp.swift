@@ -1,0 +1,271 @@
+import AppKit
+import SwiftUI
+
+@main
+struct BranchlineApp: App {
+    @State private var desk = WorkspaceTabs()
+    @State private var updates = AppUpdater()
+    @AppStorage(DiffView.syntaxHighlightingKey) private var highlightsSyntax = true
+
+    var body: some Scene {
+        Window("Branchline", id: "workspace") {
+            MainWindow(desk: desk, updates: updates)
+                .frame(minWidth: 950, minHeight: 650)
+                .preferredColorScheme(.dark)
+        }
+        .windowStyle(.hiddenTitleBar)
+        .defaultSize(width: 1360, height: 850)
+        .commands {
+            CommandGroup(after: .appInfo) {
+                if updates.isEnabled {
+                    Button("Проверить обновления…", action: updates.checkForUpdates)
+                        .disabled(!updates.canCheck || updates.waitingForRelaunch)
+                }
+            }
+            CommandGroup(replacing: .newItem) {
+                Button("Открыть репозитории…", action: desk.chooseRepository)
+                    .keyboardShortcut("o")
+                if !desk.recent.isEmpty {
+                    Menu("Недавние репозитории") {
+                        ForEach(desk.recent, id: \.self) { path in
+                            let url = URL(fileURLWithPath: path, isDirectory: true)
+                            Button(url.lastPathComponent) { desk.open(url) }
+                                .help(path)
+                        }
+                    }
+                }
+                Button("Открыть демо", action: desk.demo)
+                Divider()
+                Button("Закрыть вкладку") {
+                    if let id = desk.activeID { desk.close(id) }
+                }
+                .keyboardShortcut("w")
+                .disabled(desk.activeID == nil || desk.active?.activity != nil)
+            }
+            CommandMenu("Git") {
+                gitCommand("Commit…", action: .commit, shortcut: GitKeymap.commit)
+                gitCommand("Commit and Push…", action: .commitAndPush, shortcut: GitKeymap.commitAndPush)
+                gitCommand("Push…", action: .push, shortcut: GitKeymap.push)
+                gitCommand("Update Project…", action: .update, shortcut: GitKeymap.update)
+                Button("Fetch") { desk.active?.fetch() }.disabled(desk.active == nil || desk.active?.activity != nil)
+                Button("Refresh File Status") { desk.active?.refresh(userInitiated: true) }
+                    .keyboardShortcut("r")
+                    .disabled(desk.active == nil || desk.active?.activity != nil)
+                Divider()
+                gitCommand("Show Diff", action: .diff, shortcut: GitKeymap.showDiff)
+                gitCommand(desk.active?.commitMode == .index ? "Stage" : "Toggle Inclusion in Commit",
+                           action: .stage, shortcut: GitKeymap.stage)
+                gitCommand("Rollback…", action: .rollback, shortcut: GitKeymap.rollback)
+                gitCommand("Amend", action: .amend, shortcut: GitKeymap.amend)
+                Divider()
+                gitCommand("Commit Tool Window", action: .commitTool, shortcut: GitKeymap.commitToolWindow)
+                gitCommand("Git Tool Window", action: .log, shortcut: GitKeymap.log)
+                gitCommand("VCS Operations Popup", action: .vcsActions, shortcut: GitKeymap.vcsOperations)
+                gitCommand("Find Action…", action: .findAction, shortcut: GitKeymap.findAction)
+                Button("Branches…") { desk.active?.send(.branches) }.disabled(desk.active == nil)
+                Button("Stash") { desk.active?.activate(.stash) }.disabled(desk.active == nil)
+                Button("Worktrees") { desk.active?.activate(.worktrees) }.disabled(desk.active == nil)
+                Button("Keyboard Shortcuts") { desk.active?.send(.keymap) }.disabled(desk.active == nil)
+            }
+            CommandGroup(after: .toolbar) {
+                gitCommand("Project", action: .projectFiles, shortcut: GitKeymap.projectFiles)
+                gitCommand("Terminal", action: .terminal, shortcut: GitKeymap.terminal)
+                Divider()
+                Toggle("Подсветка синтаксиса в diff", isOn: $highlightsSyntax)
+            }
+            CommandGroup(after: .windowArrangement) {
+                Button("Предыдущий проект") { desk.selectAdjacent(-1) }
+                    .keyboardShortcut("[", modifiers: [.command, .shift])
+                    .disabled(desk.tabs.count < 2)
+                Button("Следующий проект") { desk.selectAdjacent(1) }
+                    .keyboardShortcut("]", modifiers: [.command, .shift])
+                    .disabled(desk.tabs.count < 2)
+            }
+        }
+    }
+    private func gitCommand(_ title: String, action: RepositoryCommand, shortcut: KeyboardShortcut) -> some View {
+        Button(title) { desk.active?.send(action) }
+            .keyboardShortcut(shortcut)
+            .disabled(desk.active == nil)
+    }
+
+}
+
+private struct MainWindow: View {
+    let desk: WorkspaceTabs
+    let updates: AppUpdater
+    @Environment(\.scenePhase) private var scenePhase
+    @State private var booted = false
+
+    var body: some View {
+        VStack(spacing: 0) {
+            if let workspace = desk.active {
+                RepositoryView(workspace: workspace, openWorktree: desk.open,
+                               updates: updates, updateRestartBlocker: desk.updateRestartBlocker) {
+                    projectTabs
+                }
+                .id(desk.activeID)
+            } else {
+                HStack(spacing: 5) {
+                    if !desk.tabs.isEmpty { projectTabs }
+                    WindowDragSpace()
+                        .frame(maxWidth: .infinity)
+                }
+                .padding(.leading, 78)
+                .padding(.trailing, 8)
+                .frame(height: WorkbenchLayout.titleHeight)
+                .background(Palette.header)
+                welcome
+            }
+        }
+        .foregroundStyle(Palette.text)
+        .tint(Palette.accent)
+        .background(Palette.base)
+        .ignoresSafeArea(.container, edges: .top)
+        .workbenchHints()
+        .dropDestination(for: URL.self) { urls, _ in desk.openFolders(urls) }
+        .task {
+            guard !booted else { return }
+            booted = true
+            updates.start(desk: desk)
+            let args = ProcessInfo.processInfo.arguments
+            if let index = args.firstIndex(of: "--repo"), args.indices.contains(index + 1) {
+                desk.open(URL(fileURLWithPath: args[index + 1], isDirectory: true))
+            } else if args.contains("--demo") {
+                desk.demo()
+            } else {
+                desk.restore()
+            }
+        }
+        .onChange(of: scenePhase) { _, phase in
+            if phase == .active, desk.active?.activity == nil { desk.active?.refresh() }
+        }
+        .onChange(of: desk.updateRestartBlocker) { _, _ in
+            updates.resumeRelaunchIfReady()
+        }
+        .alert(desk.notice?.title ?? "", isPresented: Binding(
+            get: { desk.notice != nil }, set: { if !$0 { desk.clearNotice() } }
+        )) {
+            Button("Закрыть", role: .cancel) { desk.clearNotice() }
+        } message: {
+            Text(desk.notice?.message ?? "")
+        }
+    }
+
+    private var projectTabs: some View {
+        HStack(spacing: 4) {
+            ViewThatFits(in: .horizontal) {
+                HStack(spacing: 2) { tabButtons }
+                    .fixedSize(horizontal: true, vertical: false)
+                ScrollViewReader { proxy in
+                    ScrollView(.horizontal) {
+                        LazyHStack(spacing: 2) { tabButtons }
+                    }
+                    .scrollIndicators(.never)
+                    .onChange(of: desk.activeID, initial: true) { _, id in
+                        if let id { proxy.scrollTo(id) }
+                    }
+                }
+            }
+            DeferredVisibility(isPending: desk.loading && desk.active != nil) { showProgress in
+                Button(action: desk.chooseRepository) {
+                    ZStack {
+                        if showProgress { ProgressView().controlSize(.mini).accessibilityHidden(true) }
+                        else { Image(systemName: "plus").font(.system(size: 12, weight: .medium)) }
+                    }
+                    .frame(width: 28, height: 30)
+                    .contentShape(Rectangle())
+                }
+                .buttonStyle(WorkbenchIconButton(keepsEnabledAppearance: desk.loading))
+                .accessibilityLabel(showProgress ? "Открываем репозиторий" : "Открыть репозитории")
+                .disabled(desk.loading)
+                .workbenchHint("Открыть репозитории", shortcut: KeyboardShortcut("o"))
+            }
+        }
+    }
+
+    private var tabButtons: some View {
+        ForEach(desk.tabs) { tab in
+            projectTab(tab).id(tab.id)
+        }
+    }
+
+    private func projectTab(_ tab: WorkspaceTabs.Tab) -> some View {
+        let selected = tab.id == desk.activeID
+        return HStack(spacing: 0) {
+            Button { desk.select(tab.id) } label: {
+                Text(tab.name)
+                    .font(.system(size: 12, weight: .medium))
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+                    .padding(.leading, 9)
+                    .padding(.trailing, 4)
+                    .frame(height: 30)
+                    .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .help(tab.root.path)
+            .accessibilityAddTraits(selected ? .isSelected : [])
+            let indexing = tab.loaded?.isUpdatingIndex == true
+            DeferredVisibility(isPending: !selected && !indexing && tab.loaded?.activity != nil) { showProgress in
+                Button { desk.close(tab.id) } label: {
+                    ZStack {
+                        if showProgress { ProgressView().controlSize(.mini).accessibilityHidden(true) }
+                        else { Image(systemName: "xmark").font(.system(size: 8, weight: .semibold)) }
+                    }
+                    .frame(width: 23, height: 30)
+                    .contentShape(Rectangle())
+                }
+                .buttonStyle(WorkbenchIconButton(keepsEnabledAppearance: indexing))
+                .accessibilityLabel(showProgress ? "Git-операция в проекте \(tab.name)" : "Закрыть вкладку \(tab.name)")
+                .workbenchHint(showProgress ? "Git-операция в процессе" : "Закрыть вкладку",
+                               shortcut: selected ? KeyboardShortcut("w") : nil)
+                .disabled(tab.loaded?.activity != nil)
+            }
+        }
+        .foregroundStyle(selected ? Palette.text : Palette.muted)
+        .frame(maxWidth: 210)
+        .background(selected ? Palette.selection : .clear, in: RoundedRectangle(cornerRadius: 5))
+        .contextMenu {
+            Button("Показать в Finder") { NSWorkspace.shared.activateFileViewerSelecting([tab.root]) }
+            Button("Закрыть вкладку") { desk.close(tab.id) }
+                .disabled(tab.loaded?.activity != nil)
+        }
+    }
+
+    private var welcome: some View {
+        VStack(spacing: 14) {
+            if !booted || desk.loading {
+                DeferredVisibility(isPending: desk.loading) { showProgress in
+                    if showProgress {
+                        ProgressView().controlSize(.small)
+                            .accessibilityLabel("Открываем репозиторий")
+                    }
+                }
+            } else {
+                Text("Откройте Git-репозиторий")
+                    .font(.system(size: 22, weight: .semibold))
+                HStack(spacing: 8) {
+                    Button("Выбрать папку…", action: desk.chooseRepository)
+                        .buttonStyle(StudioButton(kind: .primary))
+                    Button("Открыть демо", action: desk.demo)
+                        .buttonStyle(StudioButton())
+                }
+            }
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .accessibilityElement(children: .contain)
+    }
+}
+
+
+struct WindowDragSpace: NSViewRepresentable {
+    func makeNSView(context: Context) -> NSView { DragView() }
+    func updateNSView(_ nsView: NSView, context: Context) {}
+
+    private final class DragView: NSView {
+        override func mouseDown(with event: NSEvent) {
+            window?.performDrag(with: event)
+        }
+    }
+}

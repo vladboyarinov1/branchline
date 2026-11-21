@@ -1,0 +1,165 @@
+name: macOS release
+
+on:
+  workflow_dispatch:
+    inputs:
+      publish:
+        description: Sign, notarize and publish the stable release
+        type: boolean
+        default: false
+
+permissions: {}
+concurrency:
+  group: branchline-stable-release
+  cancel-in-progress: false
+
+jobs:
+  dry-run:
+    if: github.ref_name == github.event.repository.default_branch && !inputs.publish
+    runs-on: macos-26
+    permissions:
+      contents: read
+    env:
+      DEVELOPER_DIR: /Applications/Xcode_26.2.app/Contents/Developer
+      BRANCHLINE_PAGES_URL: ${{ vars.BRANCHLINE_PAGES_URL }}
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          persist-credentials: false
+      - name: Validate release configuration and build offline
+        run: |
+          Scripts/release.sh --dry-run "$RUNNER_TEMP/branchline-release" "$GITHUB_REPOSITORY"
+          Scripts/package.sh "$RUNNER_TEMP/branchline-build" --dmg
+
+  build:
+    if: github.ref_name == github.event.repository.default_branch && inputs.publish
+    runs-on: macos-26
+    timeout-minutes: 60
+    environment: macos-release
+    permissions:
+      contents: read
+    env:
+      DEVELOPER_DIR: /Applications/Xcode_26.2.app/Contents/Developer
+      BRANCHLINE_PAGES_URL: ${{ vars.BRANCHLINE_PAGES_URL }}
+    outputs:
+      tag: ${{ steps.version.outputs.tag }}
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          persist-credentials: false
+      - name: Verify the new version
+        id: version
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          Scripts/release.sh --dry-run "$RUNNER_TEMP/branchline-release" "$GITHUB_REPOSITORY"
+          version=$(plutil -extract CFBundleShortVersionString raw -o - Scripts/Info.plist)
+          build=$(plutil -extract CFBundleVersion raw -o - Scripts/Info.plist)
+          latest=$(gh api "repos/$GITHUB_REPOSITORY/releases?per_page=100" \
+            --jq '[.[] | select(.draft == false and .prerelease == false)][0].tag_name // empty')
+          if [[ -n $latest ]]; then
+            gh release download "$latest" --pattern release.json --output "$RUNNER_TEMP/previous-release.json"
+            python3 - "$RUNNER_TEMP/previous-release.json" "$version" "$build" <<'PY'
+          import json
+          from pathlib import Path
+          import sys
+
+          previous = json.loads(Path(sys.argv[1]).read_text())
+          version = tuple(map(int, sys.argv[2].split(".")))
+          old_version = tuple(map(int, previous["version"].split(".")))
+          if version <= old_version or int(sys.argv[3]) <= previous["build"]:
+              raise SystemExit("Increase both CFBundleShortVersionString and CFBundleVersion.")
+          PY
+          fi
+          printf 'tag=v%s\n' "$version" >> "$GITHUB_OUTPUT"
+      - name: Configure the temporary signing keychain
+        env:
+          DEVELOPER_ID_P12_BASE64: ${{ secrets.DEVELOPER_ID_P12_BASE64 }}
+          DEVELOPER_ID_P12_PASSWORD: ${{ secrets.DEVELOPER_ID_P12_PASSWORD }}
+          NOTARY_P8_BASE64: ${{ secrets.NOTARY_P8_BASE64 }}
+          NOTARY_KEY_ID: ${{ secrets.NOTARY_KEY_ID }}
+          NOTARY_ISSUER_ID: ${{ secrets.NOTARY_ISSUER_ID }}
+        shell: bash
+        run: |
+          : "${DEVELOPER_ID_P12_BASE64:?Set DEVELOPER_ID_P12_BASE64 in macos-release.}"
+          : "${DEVELOPER_ID_P12_PASSWORD:?Set DEVELOPER_ID_P12_PASSWORD in macos-release.}"
+          : "${NOTARY_P8_BASE64:?Set NOTARY_P8_BASE64 in macos-release.}"
+          : "${NOTARY_KEY_ID:?Set NOTARY_KEY_ID in macos-release.}"
+          : "${NOTARY_ISSUER_ID:?Set NOTARY_ISSUER_ID in macos-release.}"
+          private=$(mktemp -d "$RUNNER_TEMP/branchline-signing.XXXXXXXX")
+          trap 'rm -rf -- "$private"' EXIT
+          chmod 700 "$private"
+          keychain="$RUNNER_TEMP/branchline-release.keychain-db"
+          keychain_password=$(openssl rand -hex 32)
+          printf '%s' "$DEVELOPER_ID_P12_BASE64" | base64 -D -o "$private/developer-id.p12"
+          printf '%s' "$NOTARY_P8_BASE64" | base64 -D -o "$private/AuthKey.p8"
+          security create-keychain -p "$keychain_password" "$keychain"
+          security set-keychain-settings -lut 7200 "$keychain"
+          security unlock-keychain -p "$keychain_password" "$keychain"
+          security list-keychains -d user -s "$keychain"
+          security import "$private/developer-id.p12" -f pkcs12 -k "$keychain" \
+            -P "$DEVELOPER_ID_P12_PASSWORD" -T /usr/bin/codesign
+          security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "$keychain_password" "$keychain" >/dev/null
+          identity=$(security find-identity -v -p codesigning "$keychain" | awk '/"Developer ID Application:/ {print $2}')
+          if [[ ! $identity =~ ^[0-9A-F]{40}$ ]]; then
+            printf '%s\n' 'Expected one valid Developer ID Application signing identity.' >&2
+            exit 1
+          fi
+          xcrun notarytool store-credentials branchline-release --keychain "$keychain" \
+            --key "$private/AuthKey.p8" --key-id "$NOTARY_KEY_ID" --issuer "$NOTARY_ISSUER_ID"
+          printf 'BRANCHLINE_SIGNING_KEYCHAIN=%s\nBRANCHLINE_SIGNING_IDENTITY=%s\n' "$keychain" "$identity" >> "$GITHUB_ENV"
+      - name: Sign and notarize the release
+        env:
+          BRANCHLINE_NOTARY_PROFILE: branchline-release
+          BRANCHLINE_SPARKLE_PUBLIC_KEY: ${{ vars.BRANCHLINE_SPARKLE_PUBLIC_KEY }}
+          BRANCHLINE_SPARKLE_PRIVATE_KEY: ${{ secrets.BRANCHLINE_SPARKLE_PRIVATE_KEY }}
+        run: Scripts/release.sh "$RUNNER_TEMP/branchline-release" "$GITHUB_REPOSITORY"
+      - name: Remove the temporary signing keychain
+        if: always()
+        run: |
+          keychain="$RUNNER_TEMP/branchline-release.keychain-db"
+          if [[ -f $keychain ]]; then security delete-keychain "$keychain"; fi
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
+        with:
+          name: notarized-branchline-release
+          path: ${{ runner.temp }}/branchline-release/
+          if-no-files-found: error
+          retention-days: 7
+          compression-level: 0
+
+  publish:
+    needs: build
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
+        with:
+          name: notarized-branchline-release
+          path: release
+      - name: Publish verified assets
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          TAG: ${{ needs.build.outputs.tag }}
+        shell: bash
+        run: |
+          (cd release && sha256sum -c SHA256SUMS.txt)
+          version=${TAG#v}
+          remote_tags=$(git ls-remote "https://github.com/$GH_REPO.git" "refs/tags/$TAG" "refs/tags/$TAG^{}")
+          if [[ -n $remote_tags ]] && [[ $(tail -n 1 <<< "$remote_tags" | cut -f1) != "$GITHUB_SHA" ]]; then
+            printf '%s\n' 'Release tag already points at a different commit.' >&2
+            exit 1
+          fi
+          gh release create "$TAG" release/Branchline.dmg "release/Branchline-$version.zip" \
+            release/appcast.xml release/release.json release/SHA256SUMS.txt \
+            --target "$GITHUB_SHA" --title "Branchline $version" --generate-notes --latest
+
+  deploy:
+    needs: publish
+    permissions:
+      contents: read
+      pages: write
+      id-token: write
+    uses: ./.github/workflows/pages.yml
