@@ -19,10 +19,10 @@
 | `BRANCHLINE_SPARKLE_PUBLIC_KEY` | Variable окружения | Публичный ключ Sparkle в Base64 |
 | `BRANCHLINE_PAGES_URL` | Variable репозитория, опционально | Базовый HTTPS-адрес страницы, если используется свой домен или нестандартный путь |
 
-Для звена Sparkle после первой сборки используйте инструменты закреплённой версии. При стандартной сборке универсального приложения они находятся в `.build/package-universal/artifacts/sparkle/Sparkle/bin`.
+Для Sparkle после первой сборки используйте инструменты закреплённой версии. При стандартной сборке универсального приложения они находятся в `.build/package-arm64/artifacts/sparkle/Sparkle/bin`.
 
 ```sh
-tools=".build/package-universal/artifacts/sparkle/Sparkle/bin"
+tools=".build/package-arm64/artifacts/sparkle/Sparkle/bin"
 "$tools/generate_keys" --account branchline-stable
 "$tools/generate_keys" --account branchline-stable -p
 ```

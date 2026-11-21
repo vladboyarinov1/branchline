@@ -89,17 +89,38 @@ stage=$(mktemp -d "${TMPDIR:-/tmp}/branchline-package.XXXXXXXX")
 trap 'rm -rf -- "$stage"' EXIT
 
 if [[ $architecture == native ]]; then architecture=$(uname -m); fi
-build=(swift build --package-path "$package_dir" --configuration release --product Branchline)
+# SwiftBuild's multi-architecture graph can omit SwiftTerm's build-information plugin.
+# Build each architecture with native SwiftPM, then join the executables for distribution.
+build=(swift build --build-system native --package-path "$package_dir" --configuration release --product Branchline)
 
-sparkle_distribution() {
-    printf '%s/artifacts/sparkle/Sparkle\n' "$1"
-}
-
-build_executable() {
-    "${build[@]}" "$@" >&2 || return
+build_slice() {
+    local target_arch=$1
+    local output=$2
+    local args=(--arch "$target_arch" --scratch-path "$package_dir/.build/package-$target_arch")
     local bin_dir
-    bin_dir=$("${build[@]}" "$@" --show-bin-path) || return
-    printf '%s/Branchline\n' "$bin_dir"
+    "${build[@]}" "${args[@]}"
+    bin_dir=$("${build[@]}" "${args[@]}" --show-bin-path)
+    install -m 755 "$bin_dir/Branchline" "$output"
+
+    # Each slice can have different build-only paths. Normalize before lipo.
+    local app_rpath='@executable_path/../Frameworks'
+    local rpaths rpath
+    rpaths=$(otool -l "$output" | awk '/cmd LC_RPATH/ {
+        getline
+        getline
+        sub(/^[[:space:]]*path /, "")
+        sub(/ \(offset [0-9]+\)$/, "")
+        print
+    }' | sort -u)
+    if ! grep -Fxq "$app_rpath" <<< "$rpaths"; then
+        install_name_tool -add_rpath "$app_rpath" "$output"
+    fi
+    while IFS= read -r rpath; do
+        case "$rpath" in
+            ''|"$app_rpath"|/usr/lib/swift) ;;
+            /*) install_name_tool -delete_rpath "$rpath" "$output" ;;
+        esac
+    done <<< "$rpaths"
 }
 
 mkdir -p -- "$stage/disk"
@@ -108,22 +129,15 @@ mkdir -p -- "$app/Contents/MacOS" "$app/Contents/Resources"
 executable="$app/Contents/MacOS/Branchline"
 
 if [[ $architecture == universal ]]; then
-    if xcodebuild -version >/dev/null 2>&1; then
-        scratch_path="$package_dir/.build/package-universal"
-        binary=$(build_executable --arch arm64 --arch x86_64 --scratch-path "$scratch_path")
-        install -m 755 "$binary" "$executable"
-    else
-        scratch_path="$package_dir/.build/package-arm64"
-        arm=$(build_executable --arch arm64 --scratch-path "$package_dir/.build/package-arm64")
-        intel=$(build_executable --arch x86_64 --scratch-path "$package_dir/.build/package-x86_64")
-        xcrun lipo -create "$arm" "$intel" -output "$executable"
-        chmod 755 "$executable"
-    fi
+    build_slice arm64 "$stage/Branchline-arm64"
+    build_slice x86_64 "$stage/Branchline-x86_64"
+    xcrun lipo -create "$stage/Branchline-arm64" "$stage/Branchline-x86_64" -output "$executable"
+    chmod 755 "$executable"
+    sparkle_arch=arm64
     expected_slices=(arm64 x86_64)
 else
-    scratch_path="$package_dir/.build/package-$architecture"
-    binary=$(build_executable --arch "$architecture" --scratch-path "$scratch_path")
-    install -m 755 "$binary" "$executable"
+    build_slice "$architecture" "$executable"
+    sparkle_arch=$architecture
     expected_slices=("$architecture")
 fi
 
@@ -156,29 +170,12 @@ swiftc -parse-as-library -O "$script_dir/MakeIcon.swift" -o "$stage/make-icon"
 "$stage/make-icon" "$stage/Branchline.iconset"
 iconutil --convert icns --output "$app/Contents/Resources/Branchline.icns" "$stage/Branchline.iconset"
 
-sparkle=$(sparkle_distribution "$scratch_path")
+sparkle="$package_dir/.build/package-$sparkle_arch/artifacts/sparkle/Sparkle"
 framework="$app/Contents/Frameworks/Sparkle.framework"
 mkdir -p "$app/Contents/Frameworks"
 ditto "$sparkle/Sparkle.xcframework/macos-arm64_x86_64/Sparkle.framework" "$framework"
 install -m 644 "$sparkle/LICENSE" "$app/Contents/Resources/Sparkle-LICENSE.txt"
 
-rpaths=$(otool -arch all -l "$executable" | awk '/cmd LC_RPATH/ {
-    getline
-    getline
-    sub(/^[[:space:]]*path /, "")
-    sub(/ \(offset [0-9]+\)$/, "")
-    print
-}' | sort -u)
-app_rpath='@executable_path/../Frameworks'
-if ! grep -Fxq "$app_rpath" <<< "$rpaths"; then
-    install_name_tool -add_rpath "$app_rpath" "$executable"
-fi
-while IFS= read -r rpath; do
-    case "$rpath" in
-        ''|"$app_rpath"|/usr/lib/swift) ;;
-        /*) install_name_tool -delete_rpath "$rpath" "$executable" ;;
-    esac
-done <<< "$rpaths"
 if ! otool -L "$executable" | grep -Fq '@rpath/Sparkle.framework/Versions/'; then
     printf '%s\n' 'Branchline is missing its Sparkle framework link.' >&2
     exit 65

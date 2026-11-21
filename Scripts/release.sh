@@ -115,10 +115,7 @@ xcrun stapler validate "$dmg"
 hdiutil verify -quiet "$dmg"
 
 ditto -c -k --keepParent "$app" "$stage/update/$zip_name"
-sparkle_tools="$project_dir/.build/package-universal/artifacts/sparkle/Sparkle/bin"
-if [[ ! -x "$sparkle_tools/generate_appcast" ]]; then
-    sparkle_tools="$project_dir/.build/package-arm64/artifacts/sparkle/Sparkle/bin"
-fi
+sparkle_tools="$project_dir/.build/package-arm64/artifacts/sparkle/Sparkle/bin"
 if [[ -f "$project_dir/ReleaseNotes/$version.md" ]]; then
     cp "$project_dir/ReleaseNotes/$version.md" "$stage/update/Branchline-$version.md"
 fi
