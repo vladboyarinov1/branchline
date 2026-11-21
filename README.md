@@ -54,7 +54,7 @@
 
 ## Сборка из исходников
 
-Для сборки нужен Swift 6.2 или новее. Терминал использует [SwiftTerm](https://github.com/migueldeicaza/SwiftTerm).
+Для сборки нужен Xcode 27 или новее (Swift 6.4). Терминал использует [SwiftTerm](https://github.com/migueldeicaza/SwiftTerm).
 
 ```sh
 swift build -c release

@@ -16,11 +16,12 @@ concurrency:
 jobs:
   dry-run:
     if: github.ref_name == github.event.repository.default_branch && !inputs.publish
-    runs-on: macos-26
+    runs-on: xcode-27
+    timeout-minutes: 20
     permissions:
       contents: read
     env:
-      DEVELOPER_DIR: /Applications/Xcode_26.2.app/Contents/Developer
+      DEVELOPER_DIR: /Applications/Xcode_27.app/Contents/Developer
       BRANCHLINE_PAGES_URL: ${{ vars.BRANCHLINE_PAGES_URL }}
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
@@ -33,13 +34,13 @@ jobs:
 
   build:
     if: github.ref_name == github.event.repository.default_branch && inputs.publish
-    runs-on: macos-26
+    runs-on: xcode-27
     timeout-minutes: 60
     environment: macos-release
     permissions:
       contents: read
     env:
-      DEVELOPER_DIR: /Applications/Xcode_26.2.app/Contents/Developer
+      DEVELOPER_DIR: /Applications/Xcode_27.app/Contents/Developer
       BRANCHLINE_PAGES_URL: ${{ vars.BRANCHLINE_PAGES_URL }}
     outputs:
       tag: ${{ steps.version.outputs.tag }}
