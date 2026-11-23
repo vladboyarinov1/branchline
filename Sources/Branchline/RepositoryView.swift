@@ -739,6 +739,7 @@ struct RepositoryView<ProjectTabs: View>: View {
         let included: Bool? = if case .working = context { workspace.isIncluded(file) } else { nil }
         let selected = workspace.focus?.id == FileFocus(file: file, context: context).id
         let path = file.originalPath.map { "\($0) → \(file.path)" } ?? file.path
+        let checkboxIndent: CGFloat = 31
         return HStack(spacing: 1) {
             if let included {
                 let title = "\(inclusionAction(included)) · \(file.name)"
@@ -746,10 +747,10 @@ struct RepositoryView<ProjectTabs: View>: View {
                              enabled: file.unstaged != .conflicted && workspace.activity == nil) {
                     workspace.setIncluded([file], included: $0)
                 }
-                .padding(.leading, 19)
+                .padding(.leading, checkboxIndent)
             } else if let indexed {
                 indexCheckbox([file], indexed: indexed, label: file.name)
-                    .padding(.leading, 19)
+                    .padding(.leading, checkboxIndent)
             }
             Button {
                 workspace.preview(file, context)
