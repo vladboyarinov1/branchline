@@ -122,6 +122,7 @@ final class Workspace {
     private(set) var comparedRef: GitRef?
     private(set) var comparedFiles: [GitFile] = []
     private(set) var stashes: [GitStash] = []
+    private(set) var hasLoadedStashes = false
     private(set) var selectedStash: GitStash?
     private(set) var focus: FileFocus?
     private(set) var diffSource: DiffSource?
@@ -357,6 +358,7 @@ final class Workspace {
         status?.files = []
         detail = nil
         stashes = []
+        hasLoadedStashes = false
         diffSource = nil
         patchError = nil
         projectFiles?.suspend()
@@ -1188,6 +1190,7 @@ final class Workspace {
                 try Task.checkCancellation()
                 guard isFront, self.git?.root == git.root, mode == .stash else { return }
                 stashes = result
+                hasLoadedStashes = true
                 if let preferred = result.first(where: { $0.hash == selectedStash?.hash }) ?? result.first {
                     if detail?.commit.hash != preferred.hash || patch == nil { selectStash(preferred) }
                     else { selectedStash = preferred }
@@ -1196,7 +1199,7 @@ final class Workspace {
                     selectedStash = nil
                     detail = nil
                     detailError = nil
-                    clearPreview()
+                    if !focusIsWorkingFile { clearPreview() }
                 }
             } catch is CancellationError {
             } catch {

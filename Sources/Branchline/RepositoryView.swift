@@ -215,7 +215,7 @@ struct RepositoryView<ProjectTabs: View>: View {
             let preferredHeight = terminalVisible ? CGFloat(terminalHeight) : historyHeight
             let height = showsDock ? min(max(dockDragHeight ?? preferredHeight, limits.lowerBound), limits.upperBound) : 0
             VStack(spacing: 0) {
-                content.frame(height: max(0, geometry.size.height - height - gap))
+                content(height: max(0, geometry.size.height - height - gap))
                 if showsDock {
                     WorkbenchDockDivider(height: height, limits: limits,
                                          label: terminalVisible ? "Высота терминала" : "Высота Git Log") { proposed, finished in
@@ -230,10 +230,12 @@ struct RepositoryView<ProjectTabs: View>: View {
                     }
                     .frame(height: gap)
                     panel {
-                        if let dock = workspace.terminalDock, dock.visible { TerminalDockView(dock: dock) }
-                        else { logDock }
+                        Group {
+                            if let dock = workspace.terminalDock, dock.visible { TerminalDockView(dock: dock) }
+                            else { logDock }
+                        }
+                        .frame(height: height, alignment: .top)
                     }
-                    .frame(height: height)
                 }
             }
         }
@@ -494,43 +496,45 @@ struct RepositoryView<ProjectTabs: View>: View {
             .clipShape(RoundedRectangle(cornerRadius: WorkbenchLayout.radius))
     }
 
-    @ViewBuilder private var content: some View {
+    private func content(height: CGFloat) -> some View {
         let inset = WorkbenchLayout.gutter / 2
-        let showsChangeSidebar = projectVisible || workspace.commitToolVisible
-        let showsEditorInset = workspace.comparedRef != nil || workspace.mode == .stash || showsChangeSidebar
-        HSplitView {
-            if workspace.comparedRef != nil {
-                panel { branchPane }
-                    .frame(minWidth: 162, idealWidth: 184, maxWidth: 235)
-                    .padding(.trailing, inset)
-                    .measureWorkbenchPane()
-            } else if workspace.mode == .stash {
-                panel { stashPane }
-                    .frame(minWidth: 235, idealWidth: 282, maxWidth: 370)
-                    .padding(.trailing, inset)
-                    .measureWorkbenchPane()
-            } else if showsChangeSidebar {
+        let comparing = workspace.comparedRef != nil
+        let showingStash = workspace.mode == .stash
+        let showsSidebar = comparing || showingStash || projectVisible || workspace.commitToolVisible
+        let sidebarWidth: (min: CGFloat, ideal: CGFloat, max: CGFloat) = comparing ? (162, 184, 235)
+            : showingStash ? (235, 282, 370) : (244, 276, 310)
+
+        // NSSplitView measures newly inserted panes at their ideal size during tool switches.
+        // Pass the work area's height to the panes themselves so their canvas stays full-height.
+        return HSplitView {
+            if showsSidebar {
                 panel {
-                    if let project = workspace.projectFiles, projectVisible {
-                        ProjectFilesView(model: project, onEdit: editFile)
-                    } else { changesPane }
+                    Group {
+                        if comparing { branchPane }
+                        else if showingStash { stashPane }
+                        else if let project = workspace.projectFiles, projectVisible {
+                            ProjectFilesView(model: project, onEdit: editFile)
+                        } else { changesPane }
+                    }
+                    .frame(height: height, alignment: .top)
                 }
-                    .frame(minWidth: 244, idealWidth: 276, maxWidth: 310)
-                    .padding(.trailing, inset)
-                    .measureWorkbenchPane()
+                .frame(minWidth: sidebarWidth.min, idealWidth: sidebarWidth.ideal, maxWidth: sidebarWidth.max)
+                .padding(.trailing, inset)
+                .measureWorkbenchPane()
             }
-            panel { patchPane }
+            panel { patchPane.frame(height: height) }
                 .frame(minWidth: 360, maxWidth: .infinity)
-                .padding(.leading, showsEditorInset ? inset : 0)
-                .padding(.trailing, workspace.comparedRef != nil ? inset : 0)
+                .padding(.leading, showsSidebar ? inset : 0)
+                .padding(.trailing, comparing ? inset : 0)
                 .measureWorkbenchPane()
             if let comparedRef = workspace.comparedRef {
-                panel { comparisonPane(comparedRef) }
+                panel { comparisonPane(comparedRef).frame(height: height, alignment: .top) }
                     .frame(minWidth: 222, idealWidth: 264, maxWidth: 334)
                     .padding(.leading, inset)
                     .measureWorkbenchPane()
             }
         }
+        .frame(height: height, alignment: .top)
         .paintWorkbenchGutter()
     }
 
@@ -1050,16 +1054,16 @@ struct RepositoryView<ProjectTabs: View>: View {
             .padding(.horizontal, 12).frame(height: 42)
             StudioRule()
             if workspace.stashes.isEmpty {
-                if workspace.isExtrasLoading {
-                    loadingBody("Загружаем stash")
-                } else if let error = workspace.detailError {
+                if let error = workspace.detailError {
                     Text(error).font(.system(size: 11)).foregroundStyle(Palette.muted)
                         .padding(WorkbenchLayout.panelInset)
                         .frame(maxWidth: .infinity, maxHeight: .infinity)
-                } else {
+                } else if workspace.hasLoadedStashes {
                     Text("Stash пуст")
                         .font(.system(size: 12)).foregroundStyle(Palette.muted)
                         .frame(maxWidth: .infinity, maxHeight: .infinity)
+                } else {
+                    loadingBody("Загружаем stash")
                 }
             } else {
                 ScrollView {

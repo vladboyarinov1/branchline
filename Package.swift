@@ -10,6 +10,7 @@ let package = Package(
     targets: [
         .executableTarget(name: "Branchline", dependencies: [
             .product(name: "SwiftTerm", package: "SwiftTerm")
-        ])
+        ]),
+        .testTarget(name: "BranchlineTests", dependencies: ["Branchline"])
     ]
 )
