@@ -127,7 +127,8 @@ final class Workspace {
     private(set) var worktrees: [GitWorktree] = []
     private(set) var selectedStash: GitStash?
     private(set) var focus: FileFocus?
-    private(set) var patch: String?
+    private(set) var diffSource: DiffSource?
+    var patch: String? { diffSource?.patch }
     private(set) var patchError: String?
     private(set) var detailError: String?
     private(set) var notice: GitNotice?
@@ -291,6 +292,61 @@ final class Workspace {
         }
     }
 
+    var needsPreviewPreparation: Bool {
+        guard !isFront, activity == nil, mode != .worktrees else { return false }
+        if let project = activeProjectFiles, let path = project.previewPath {
+            return !project.previewCache.contains(path)
+        }
+        guard diffSource == nil, patchError == nil else { return false }
+        return focus != nil || mode == .changes && (!hasWorkingStatus || initialWorkingFile != nil)
+    }
+
+    var activeProjectFiles: ProjectFilesModel? {
+        guard comparedRef == nil, mode == .changes || mode == .history,
+              let projectFiles, projectFiles.visible else { return nil }
+        return projectFiles
+    }
+
+    func preparePreview() async throws {
+        guard needsPreviewPreparation, let git else { return }
+        if let project = activeProjectFiles, let path = project.previewPath {
+            await project.previewCache.load(model: project, path: path, revision: project.previewRevision)
+            try Task.checkCancellation()
+            return
+        }
+        if !hasWorkingStatus && (mode == .changes || focusIsWorkingFile) {
+            let snapshot = try await git.status()
+            try Task.checkCancellation()
+            status = snapshot
+            hasWorkingStatus = true
+        }
+        let target: FileFocus?
+        if let focus, focus.context.isWorkingFile {
+            target = workingFile(matching: focus.file).map { FileFocus(file: $0, context: workingContext(for: $0, previous: focus.context)) }
+                ?? initialWorkingFile.map { FileFocus(file: $0, context: workingContext(for: $0)) }
+        } else if let focus {
+            target = focus
+        } else {
+            target = mode == .changes ? initialWorkingFile.map { FileFocus(file: $0, context: workingContext(for: $0)) } : nil
+        }
+        guard let target else {
+            focus = nil
+            return
+        }
+        do {
+            let source = try await readDiff(target, in: git)
+            try Task.checkCancellation()
+            focus = target
+            diffSource = source
+        } catch is CancellationError {
+            throw CancellationError()
+        } catch {
+            try Task.checkCancellation()
+            focus = target
+            patchError = error.localizedDescription
+        }
+    }
+
     func discardInactiveSnapshot() {
         guard !isFront else { return }
         hasWorkingStatus = false
@@ -302,7 +358,7 @@ final class Workspace {
         detail = nil
         stashes = []
         worktrees = []
-        patch = nil
+        diffSource = nil
         patchError = nil
         projectFiles?.suspend()
     }
@@ -314,12 +370,22 @@ final class Workspace {
     }
 
     func selectInitialChange() {
-        let files = status?.files ?? []
-        guard let file = files.first(where: { $0.unstaged != nil }) ?? files.first else {
+        guard let file = initialWorkingFile else {
             clearPreview()
             return
         }
         selectPatch(file, workingContext(for: file))
+    }
+
+    private var initialWorkingFile: GitFile? {
+        let files = status?.files ?? []
+        return files.first(where: { $0.unstaged != nil }) ?? files.first
+    }
+
+    private func workingFile(matching previous: GitFile) -> GitFile? {
+        let files = status?.files ?? []
+        return files.first(where: { $0.path == previous.path })
+            ?? files.first(where: { $0.originalPath == previous.path || $0.path == previous.originalPath })
     }
 
     func activate(_ value: WorkspaceMode) {
@@ -529,9 +595,7 @@ final class Workspace {
             if focus == nil { selectInitialChange() }
             return
         }
-        let files = status?.files ?? []
-        guard let file = files.first(where: { $0.path == previous.file.path })
-            ?? files.first(where: { $0.originalPath == previous.file.path || $0.path == previous.file.originalPath }) else {
+        guard let file = workingFile(matching: previous.file) else {
             selectInitialChange()
             return
         }
@@ -765,23 +829,30 @@ final class Workspace {
         guard force || focus != target || (patch == nil && patchTask == nil) else { return }
         cancelPatchRead()
         let request = patchRequest
-        if focus?.id != target.id { patch = nil }
+        if focus?.id != target.id { diffSource = nil }
         if focus != target { focus = target }
         if patchError != nil { patchError = nil }
         patchTask = Task {
             defer { if request == patchRequest { patchTask = nil } }
             do {
-                let result = try await git.patch(target.file, context: target.context)
+                let result = try await readDiff(target, in: git)
                 try Task.checkCancellation()
                 guard isCurrentPreview(target.id, request: request, at: git.root) else { return }
-                if patch != result { patch = result }
+                if patch != result.patch { diffSource = result }
             } catch is CancellationError {
             } catch {
                 guard !Task.isCancelled, isCurrentPreview(target.id, request: request, at: git.root) else { return }
-                patch = nil
+                diffSource = nil
                 patchError = error.localizedDescription
             }
         }
+    }
+
+    private func readDiff(_ target: FileFocus, in git: Git) async throws -> DiffSource {
+        let patch = try await git.patch(target.file, context: target.context)
+        try Task.checkCancellation()
+        if let diffSource, diffSource.patch == patch { return diffSource }
+        return await DiffSource.parse(patch)
     }
 
     private func isCurrentPreview(_ id: FileFocus.ID, request: UInt, at root: URL) -> Bool {
@@ -797,7 +868,7 @@ final class Workspace {
     private func clearPreview() {
         cancelPatchRead()
         focus = nil
-        patch = nil
+        diffSource = nil
         patchError = nil
     }
 
@@ -972,10 +1043,10 @@ final class Workspace {
                 let result = try await git.compare(ref)
                 guard isCurrent() else { return }
                 let context = GitPatchContext.comparison(ref.fullName)
-                var initialPatch: String?
+                var initialSource: DiffSource?
                 var initialError: String?
                 if let file = result.first {
-                    do { initialPatch = try await git.patch(file, context: context) }
+                    do { initialSource = try await readDiff(FileFocus(file: file, context: context), in: git) }
                     catch { initialError = error.localizedDescription }
                 }
                 guard isCurrent() else { return }
@@ -984,7 +1055,7 @@ final class Workspace {
                 comparedRef = ref
                 comparedFiles = result
                 focus = result.first.map { FileFocus(file: $0, context: context) }
-                patch = initialPatch
+                diffSource = initialSource
                 patchError = initialError
             } catch {
                 if isCurrent() { report("Не удалось сравнить ветки", error) }
@@ -1040,11 +1111,16 @@ final class Workspace {
         return pending
     }
 
-    func fetch() { perform("Получаем ссылки", success: "Fetch завершён") { try await $0.fetch() } }
-    func pull() {
-        guard let branch = status?.branch, status?.upstream != nil, operation == nil else { return }
+    var canUpdateFromUpstream: Bool {
+        guard let status else { return false }
+        return status.branch != nil && status.upstream != nil && status.behind > 0 && operation == nil
+    }
+
+    func fetch() { perform("Получаем коммиты", success: "Fetch завершён") { try await $0.fetch() } }
+    func updateFromUpstream() {
+        guard let branch = status?.branch, canUpdateFromUpstream else { return }
         perform("Обновляем ветку", success: "Ветка обновлена", conflictOperation: .merge) {
-            try await $0.pull(expectedBranch: branch)
+            try await $0.updateFromUpstream(expectedBranch: branch)
         }
     }
     func push(to remote: String?, branch: String, upstream: String?) {

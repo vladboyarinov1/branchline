@@ -6,6 +6,7 @@ import SwiftUI
 @MainActor @Observable
 final class ProjectFilesModel {
     let root: URL
+    let previewCache = ProjectPreviewCache()
     var visible = false {
         didSet {
             if visible { loadRoot() }
@@ -62,6 +63,7 @@ final class ProjectFilesModel {
 
     func closePreview() {
         if previewPath != nil { previewPath = nil }
+        previewCache.clear()
     }
 
     fileprivate func loadRoot() {
@@ -80,6 +82,7 @@ final class ProjectFilesModel {
     func suspend() {
         pauseLoads()
         listings.removeAll()
+        previewCache.clear()
     }
 
     fileprivate func select(_ entry: ProjectFileEntry) {

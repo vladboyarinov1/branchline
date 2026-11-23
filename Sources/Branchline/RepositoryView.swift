@@ -17,6 +17,9 @@ struct RepositoryView<ProjectTabs: View>: View {
     @State private var handledDiffFocus: UInt = 0
     @State private var workingReveal: FileFocus.ID?
     @State private var collapsedGroups: Set<ChangeGroup> = []
+    @AppStorage("branchline.terminal.height") private var terminalHeight = 270.0
+    @State private var historyHeight: CGFloat = 270
+    @State private var dockDragHeight: CGFloat?
     @FocusState private var changesFocused: Bool
 
     init(workspace: Workspace, openWorktree: @escaping (URL) -> Void,
@@ -199,31 +202,44 @@ struct RepositoryView<ProjectTabs: View>: View {
     }
 
     private var terminalVisible: Bool { workspace.terminalDock?.visible == true }
-    private var projectVisible: Bool {
-        workspace.projectFiles?.visible == true && workspace.comparedRef == nil &&
-        (workspace.mode == .changes || workspace.mode == .history)
-    }
+    private var projectVisible: Bool { workspace.activeProjectFiles != nil }
     private var historyVisible: Bool {
         workspace.mode == .history && workspace.historyToolVisible && workspace.comparedRef == nil && !terminalVisible
     }
 
     private var workArea: some View {
-        VSplitView {
-            content
-                .frame(minHeight: 230, idealHeight: 460, maxHeight: .infinity)
-                .padding(.bottom, terminalVisible || historyVisible ? WorkbenchLayout.gutter / 2 : 0)
-                .measureWorkbenchPane(in: .dock)
-            if terminalVisible || historyVisible {
-                panel {
-                    if let dock = workspace.terminalDock, dock.visible { TerminalDockView(dock: dock) }
-                    else { logDock }
+        GeometryReader { geometry in
+            let showsDock = terminalVisible || historyVisible
+            let gap = showsDock ? WorkbenchLayout.gutter : 0
+            let maxDockHeight = max(0, geometry.size.height - gap - 230)
+            let limits = min(190, maxDockHeight)...maxDockHeight
+            let preferredHeight = terminalVisible ? CGFloat(terminalHeight) : historyHeight
+            let height = showsDock ? min(max(dockDragHeight ?? preferredHeight, limits.lowerBound), limits.upperBound) : 0
+            VStack(spacing: 0) {
+                content.frame(height: max(0, geometry.size.height - height - gap))
+                if showsDock {
+                    WorkbenchDockDivider(height: height, limits: limits,
+                                         label: terminalVisible ? "Высота терминала" : "Высота Git Log") { proposed, finished in
+                        let newHeight = min(max(proposed, limits.lowerBound), limits.upperBound)
+                        if finished {
+                            if terminalVisible { terminalHeight = Double(newHeight) }
+                            else { historyHeight = newHeight }
+                            dockDragHeight = nil
+                        } else {
+                            dockDragHeight = newHeight
+                        }
+                    }
+                    .frame(height: gap)
+                    panel {
+                        if let dock = workspace.terminalDock, dock.visible { TerminalDockView(dock: dock) }
+                        else { logDock }
+                    }
+                    .frame(height: height)
                 }
-                .frame(minHeight: 190, idealHeight: 270, maxHeight: .infinity)
-                .padding(.top, WorkbenchLayout.gutter / 2)
-                .measureWorkbenchPane(in: .dock)
             }
         }
-        .paintWorkbenchGutter(in: .dock)
+        .onChange(of: terminalVisible) { _, _ in dockDragHeight = nil }
+        .onChange(of: historyVisible) { _, _ in dockDragHeight = nil }
     }
 
     private var branchPane: some View {
@@ -401,14 +417,21 @@ struct RepositoryView<ProjectTabs: View>: View {
             .workbenchHint(workspace.status?.upstream.map { "Git Branches · \($0)" } ?? "Git Branches")
             .accessibilityLabel("Git Branches, \(workspace.branch)")
             .accessibilityValue(tracking.accessibilitySummary)
-            Button { workspace.pull() } label: {
+            Button { workspace.fetch() } label: {
+                Label("Fetch", systemImage: "tray.and.arrow.down")
+            }
+            .buttonStyle(StudioButton(kind: .quiet))
+            .disabled(workspace.activity != nil)
+            .workbenchHint("Fetch · Получить сведения с сервера")
+            Button { workspace.updateFromUpstream() } label: {
                 Image(systemName: "arrow.down.to.line").frame(width: 14)
             }
             .buttonStyle(StudioButton(kind: .quiet, keepsEnabledAppearance: workspace.isUpdatingIndex && canUpdateWhenIdle))
             .accessibilityLabel("Update Project")
             .accessibilityValue(behind > 0 ? "Входящих коммитов: \(behind)" : "")
             .disabled(!canUpdate)
-            .workbenchHint(behind > 0 ? "Update Project · Входящих коммитов: \(behind)" : "Update Project",
+            .workbenchHint(behind > 0 ? "Update Project · Применить входящие коммиты: \(behind)"
+                           : "Update Project · Нет полученных коммитов для обновления",
                            shortcut: GitKeymap.update)
             Button(action: preparePush) {
                 Text("Push")
@@ -476,12 +499,12 @@ struct RepositoryView<ProjectTabs: View>: View {
                     panel { branchPane }
                         .frame(minWidth: 162, idealWidth: 184, maxWidth: 235)
                         .padding(.trailing, inset)
-                        .measureWorkbenchPane(in: .editor)
+                        .measureWorkbenchPane()
                 } else if workspace.mode == .stash {
                     panel { stashPane }
                         .frame(minWidth: 235, idealWidth: 282, maxWidth: 370)
                         .padding(.trailing, inset)
-                        .measureWorkbenchPane(in: .editor)
+                        .measureWorkbenchPane()
                 } else if showsChangeSidebar {
                     panel {
                         if let project = workspace.projectFiles, projectVisible {
@@ -490,21 +513,21 @@ struct RepositoryView<ProjectTabs: View>: View {
                     }
                         .frame(minWidth: 244, idealWidth: 276, maxWidth: 310)
                         .padding(.trailing, inset)
-                        .measureWorkbenchPane(in: .editor)
+                        .measureWorkbenchPane()
                 }
                 panel { patchPane }
                     .frame(minWidth: 360, maxWidth: .infinity)
                     .padding(.leading, showsEditorInset ? inset : 0)
                     .padding(.trailing, workspace.comparedRef != nil ? inset : 0)
-                    .measureWorkbenchPane(in: .editor)
+                    .measureWorkbenchPane()
                 if let comparedRef = workspace.comparedRef {
                     panel { comparisonPane(comparedRef) }
                         .frame(minWidth: 222, idealWidth: 264, maxWidth: 334)
                         .padding(.leading, inset)
-                        .measureWorkbenchPane(in: .editor)
+                        .measureWorkbenchPane()
                 }
             }
-            .paintWorkbenchGutter(in: .editor)
+            .paintWorkbenchGutter()
         }
     }
 
@@ -846,7 +869,7 @@ struct RepositoryView<ProjectTabs: View>: View {
                 ProjectFilePreview(model: project, path: path, revision: project.previewRevision)
             } else if let focus = workspace.focus {
                 let labels = workspace.patchLabels
-                DiffView(focus: focus, patch: workspace.patch, oldLabel: labels.0, newLabel: labels.1,
+                DiffView(focus: focus, source: workspace.diffSource, oldLabel: labels.0, newLabel: labels.1,
                          fileNavigation: fileNavigation(for: focus), error: workspace.patchError,
                          focusRequest: diffFocusRequest == handledDiffFocus ? 0 : diffFocusRequest,
                          onFocus: { handledDiffFocus = $0 })
@@ -1159,7 +1182,7 @@ struct RepositoryView<ProjectTabs: View>: View {
     }
 
     private var canUpdateWhenIdle: Bool {
-        workspace.status?.upstream != nil && workspace.operation == nil
+        workspace.canUpdateFromUpstream
     }
 
     private var canCreateBranch: Bool {
@@ -1178,10 +1201,10 @@ struct RepositoryView<ProjectTabs: View>: View {
                       shortcut: GitKeymap.commitAndPush, enabled: mutable) { handle(.commitAndPush) },
             GitAction(title: "Push…", detail: "Отправить коммиты", icon: "arrow.up",
                       shortcut: GitKeymap.push, enabled: canPush) { preparePush() },
-            GitAction(title: "Update Project", detail: "Получить удалённые коммиты и объединить с текущей веткой", icon: "arrow.down.to.line",
-                      shortcut: GitKeymap.update, enabled: canUpdate) { handle(.update) },
             GitAction(title: "Fetch", detail: "Получить удалённые ссылки", icon: "tray.and.arrow.down",
                       enabled: mutable) { workspace.fetch() },
+            GitAction(title: "Update Project", detail: "Применить уже полученные коммиты к текущей ветке", icon: "arrow.down.to.line",
+                      shortcut: GitKeymap.update, enabled: canUpdate) { handle(.update) },
             GitAction(title: "Refresh File Status", detail: "Обновить список изменённых файлов", icon: "arrow.clockwise",
                       shortcut: KeyboardShortcut("r"), enabled: mutable) { workspace.refresh(userInitiated: true) },
             GitAction(title: "Branches", detail: "Ветки, теги и действия Checkout, Compare, Merge, Rebase", icon: "arrow.triangle.branch") {
@@ -1359,7 +1382,7 @@ struct RepositoryView<ProjectTabs: View>: View {
         case .push:
             if canPush { preparePush() }
         case .update:
-            if canUpdate { workspace.pull() }
+            if canUpdate { workspace.updateFromUpstream() }
         case .diff:
             handledCommitFocus = commitFocusRequest
             if projectVisible, let path = workspace.projectFiles?.previewPath,

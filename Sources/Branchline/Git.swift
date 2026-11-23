@@ -140,6 +140,7 @@ enum GitError: LocalizedError {
     case invalidResponse
     case invalidBranch
     case noUpstream
+    case missingFetchedUpstream
     case destinationChanged
     case dirtyWorktree
     case operationInProgress
@@ -158,6 +159,7 @@ enum GitError: LocalizedError {
         case .invalidResponse: "Не удалось прочитать ответ Git."
         case .invalidBranch: "Для этой операции нужно выбрать локальную ветку."
         case .noUpstream: "У этой ветки ещё нет удалённой ветки для отправки."
+        case .missingFetchedUpstream: "Не найдена отслеживаемая ветка. Проверьте её настройки и выполните Fetch."
         case .destinationChanged: "Текущая ветка или назначение изменились. Проверьте параметры и повторите действие."
         case .dirtyWorktree: "Сначала сделайте коммит или сохраните локальные изменения в Stash."
         case .operationInProgress: "Сначала завершите текущую Git-операцию."
@@ -612,11 +614,15 @@ struct Git: Sendable {
         try await write(["fetch", "--all", "--no-prune", "--no-prune-tags"])
     }
 
-    func pull(expectedBranch: String? = nil) async throws {
+    func updateFromUpstream(expectedBranch: String) async throws {
         _ = try await currentBranch(expected: expectedBranch)
         let directory = try await gitDirectory()
         guard GitOperation.detect(in: directory) == nil else { throw GitError.operationInProgress }
-        try await write(["pull", "--no-rebase", "--ff", "--no-edit", "--commit", "--no-autostash", "--no-squash", "--no-prune"])
+        let upstream = "\(expectedBranch)@{upstream}"
+        let result = try await read(["rev-parse", "--verify", "--quiet", "--end-of-options", "\(upstream)^{commit}"],
+                                    allowed: [0, 1, 128])
+        guard result.status == 0 else { throw GitError.missingFetchedUpstream }
+        try await write(["merge", "--ff", "--no-edit", "--commit", "--no-autostash", "--no-squash", "--", upstream])
     }
 
     func push(expectedBranch: String? = nil, expectedUpstream: String? = nil) async throws {

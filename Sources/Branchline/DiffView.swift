@@ -31,7 +31,7 @@ private struct DiffFilePosition: Equatable {
 struct DiffView: View {
     static let syntaxHighlightingKey = "branchline.diff.syntaxHighlighting"
     let focus: FileFocus
-    let patch: String?
+    let source: DiffSource?
     let oldLabel: String
     let newLabel: String
     let fileNavigation: DiffFileNavigation?
@@ -48,17 +48,22 @@ struct DiffView: View {
     @State private var pendingFileStep: DiffDirection?
     @State private var handledFocusRequest: UInt = 0
 
-    init(focus: FileFocus, patch: String?, oldLabel: String, newLabel: String,
+    init(focus: FileFocus, source: DiffSource?, oldLabel: String, newLabel: String,
          fileNavigation: DiffFileNavigation? = nil, error: String? = nil,
          focusRequest: UInt = 0, onFocus: ((UInt) -> Void)? = nil) {
         self.focus = focus
-        self.patch = patch
+        self.source = source
         self.oldLabel = oldLabel
         self.newLabel = newLabel
         self.fileNavigation = fileNavigation
         self.error = error
         self.focusRequest = focusRequest
         self.onFocus = onFocus
+        if let source, error == nil {
+            let target = DiffPreviewTarget(focus: focus, oldLabel: oldLabel, newLabel: newLabel)
+            _preview = State(initialValue: DiffPreview(target: target, patch: source.patch,
+                                                       position: fileNavigation?.position, document: source.document))
+        }
     }
 
     var body: some View {
@@ -72,7 +77,7 @@ struct DiffView: View {
         let document = visible?.document
         let showRows = document.map { $0.rowCount > 0 && !($0.isBinary && $0.hunks.isEmpty) } ?? false
         let syntax = highlightsSyntax ? visible.flatMap { DiffSyntax(path: $0.target.file.path) } : nil
-        let request = DiffPreviewRequest(target: target, patch: error == nil ? patch : nil, position: fileNavigation?.position)
+        let request = DiffPreviewRequest(target: target, patch: error == nil ? source?.patch : nil, position: fileNavigation?.position)
         VStack(spacing: 0) {
             CodeFileHeading(file: displayedTarget.file, pending: pending,
                             loadingLabel: "Загрузка сравнения", colors: colors)
@@ -139,7 +144,7 @@ struct DiffView: View {
             }
             .frame(width: 0, height: 0)
         }
-        .task(id: request) { await load(request) }
+        .task(id: request) { load(request) }
         .onChange(of: target.key) { _, _ in pendingFileStep = nil }
         .onChange(of: error) { _, value in
             if value != nil {
@@ -151,21 +156,10 @@ struct DiffView: View {
         .onChange(of: mode) { _, _ in jump = DiffJump(index: activeHunk) }
     }
 
-    private func load(_ request: DiffPreviewRequest) async {
-        guard !Task.isCancelled, let patch = request.patch else { return }
-        let document: DiffDocument
-        if let preview, preview.patch == patch {
-            if preview.target == request.target && preview.position == request.position { return }
-            document = preview.document
-        } else {
-            let parser = Task.detached(priority: .userInitiated) { DiffDocument(patch: patch) }
-            document = await withTaskCancellationHandler {
-                await parser.value
-            } onCancel: {
-                parser.cancel()
-            }
-        }
-        guard !Task.isCancelled else { return }
+    private func load(_ request: DiffPreviewRequest) {
+        guard !Task.isCancelled, let source, let patch = request.patch else { return }
+        if let preview, preview.patch == patch, preview.target == request.target, preview.position == request.position { return }
+        let document = source.document
         if preview?.document.id != document.id || preview?.target.key != request.target.key {
             if preview?.target.key.keepsViewport(for: request.target.key) == true {
                 activeHunk = min(activeHunk, max(0, document.hunks.count - 1))
@@ -399,17 +393,24 @@ struct ProjectFilePreview: View {
     @State private var loaded: Loaded?
     @State private var discard: InlineFileBuffer?
 
+    init(model: ProjectFilesModel, path: String, revision: UInt) {
+        self.model = model
+        self.path = path
+        self.revision = revision
+        _loaded = State(initialValue: model.previewCache.content(at: path))
+    }
+
     private struct Request: Equatable {
         let path: String
         let revision: UInt
     }
 
-    private struct Loaded {
+    fileprivate struct Loaded {
         let path: String
         let content: Content
     }
 
-    private enum Content {
+    fileprivate enum Content {
         case editor(InlineFileBuffer)
         case readOnly(DiffDocument)
         case unsupported
@@ -460,7 +461,10 @@ struct ProjectFilePreview: View {
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .foregroundStyle(colorScheme == .dark ? Color(nsColor: colors.text) : .primary)
         .background(Color(nsColor: colors.canvas))
-        .task(id: request) { await load(request) }
+        .task(id: request) {
+            await model.previewCache.load(model: model, path: request.path, revision: request.revision)
+            if !Task.isCancelled, let content = model.previewCache.content(at: request.path) { loaded = content }
+        }
         .confirmationDialog("Отбросить несохранённый текст и перечитать файл?", isPresented: Binding(
             get: { discard != nil }, set: { if !$0 { discard = nil } }
         ), titleVisibility: .visible, presenting: discard) { editor in
@@ -468,14 +472,28 @@ struct ProjectFilePreview: View {
         }
     }
 
-    private func load(_ request: Request) async {
-        if let editor = model.pendingEditor(at: request.path) {
-            loaded = Loaded(path: request.path, content: .editor(editor))
+}
+
+@MainActor
+final class ProjectPreviewCache {
+    private var loaded: ProjectFilePreview.Loaded?
+
+    func contains(_ path: String) -> Bool { loaded?.path == path }
+
+    fileprivate func content(at path: String) -> ProjectFilePreview.Loaded? {
+        contains(path) ? loaded : nil
+    }
+
+    func clear() { loaded = nil }
+
+    func load(model: ProjectFilesModel, path: String, revision: UInt) async {
+        if let editor = model.pendingEditor(at: path) {
+            loaded = ProjectFilePreview.Loaded(path: path, content: .editor(editor))
             return
         }
         let root = model.root
         let read = Task.detached(priority: .userInitiated) {
-            let snapshot = try ProjectFileContent.load(root: root, path: request.path)
+            let snapshot = try ProjectFileContent.load(root: root, path: path)
             if let draft = snapshot.draft { return FileRead.editable(draft) }
             if case .text(let text, let truncated) = snapshot.content {
                 return FileRead.readOnly(DiffDocument(source: text, truncated: truncated))
@@ -483,21 +501,21 @@ struct ProjectFilePreview: View {
             return FileRead.unsupported
         }
         let result = await withTaskCancellationHandler { await read.result } onCancel: { read.cancel() }
-        guard !Task.isCancelled else { return }
-        let content: Content
-        if let editor = model.pendingEditor(at: request.path) {
+        guard !Task.isCancelled, model.previewPath == path, model.previewRevision == revision else { return }
+        let content: ProjectFilePreview.Content
+        if let editor = model.pendingEditor(at: path) {
             content = .editor(editor)
         } else {
             switch result {
             case .success(.editable(let draft)):
-                if loaded?.path == request.path, case .editor(let editor) = loaded?.content,
+                if loaded?.path == path, case .editor(let editor) = loaded?.content,
                    !editor.dirty, !editor.saving {
                     editor.refreshIfClean(from: draft)
                     return
                 }
-                content = .editor(model.editor(at: request.path, draft: draft))
+                content = .editor(model.editor(at: path, draft: draft))
             case .success(.readOnly(let document)):
-                if loaded?.path == request.path, case .readOnly(let previous) = loaded?.content,
+                if loaded?.path == path, case .readOnly(let previous) = loaded?.content,
                    document.matchesSource(previous) { return }
                 content = .readOnly(document)
             case .success(.unsupported):
@@ -506,7 +524,7 @@ struct ProjectFilePreview: View {
                 content = .failed(error.localizedDescription)
             }
         }
-        loaded = Loaded(path: request.path, content: content)
+        loaded = ProjectFilePreview.Loaded(path: path, content: content)
     }
 
     private enum FileRead: Sendable {
@@ -941,6 +959,21 @@ private struct DiffPreview {
     let patch: String
     let position: DiffFilePosition?
     let document: DiffDocument
+}
+
+struct DiffSource: Sendable {
+    let patch: String
+    fileprivate let document: DiffDocument
+
+    static func parse(_ patch: String) async -> Self {
+        let parser = Task.detached(priority: .userInitiated) { DiffDocument(patch: patch) }
+        let document = await withTaskCancellationHandler {
+            await parser.value
+        } onCancel: {
+            parser.cancel()
+        }
+        return Self(patch: patch, document: document)
+    }
 }
 
 private enum DiffDirection: Sendable {

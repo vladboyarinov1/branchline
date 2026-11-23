@@ -95,9 +95,13 @@ final class WorkspaceTabs {
         guard activeID != id || loading else { return }
         guard let tab = tabs.first(where: { $0.id == id }) else { return }
         if let workspace = tab.loaded {
-            opening?.cancel()
-            loading = false
-            switchTo(tab.id, workspace: workspace)
+            if workspace.needsPreviewPreparation {
+                startOpening { try await self.showPrepared(tab.id, workspace: workspace) }
+            } else {
+                opening?.cancel()
+                loading = false
+                switchTo(tab.id, workspace: workspace)
+            }
         } else {
             startOpening {
                 let git = try await Git.discover(tab.root)
@@ -186,7 +190,7 @@ final class WorkspaceTabs {
         try Task.checkCancellation()
         add(git.root)
         if let existing = tabs.first(where: { $0.id == git.root })?.loaded {
-            switchTo(git.root, workspace: existing)
+            try await showPrepared(git.root, workspace: existing)
             return
         }
         let workspace = Workspace()
@@ -194,7 +198,14 @@ final class WorkspaceTabs {
         try Task.checkCancellation()
         guard let index = tabs.firstIndex(where: { $0.id == git.root }) else { return }
         tabs[index].loaded = workspace
-        switchTo(git.root, workspace: workspace)
+        try await showPrepared(git.root, workspace: workspace)
+    }
+
+    private func showPrepared(_ id: URL, workspace: Workspace) async throws {
+        try await workspace.preparePreview()
+        try Task.checkCancellation()
+        guard tabs.contains(where: { $0.id == id }) else { return }
+        switchTo(id, workspace: workspace)
     }
 
     private func switchTo(_ id: URL, workspace: Workspace) {

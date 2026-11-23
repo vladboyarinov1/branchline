@@ -41,8 +41,10 @@ struct BranchlineApp: App {
                 gitCommand("Commit…", action: .commit, shortcut: GitKeymap.commit)
                 gitCommand("Commit and Push…", action: .commitAndPush, shortcut: GitKeymap.commitAndPush)
                 gitCommand("Push…", action: .push, shortcut: GitKeymap.push)
-                gitCommand("Update Project…", action: .update, shortcut: GitKeymap.update)
                 Button("Fetch") { desk.active?.fetch() }.disabled(desk.active == nil || desk.active?.activity != nil)
+                Button("Update Project") { desk.active?.send(.update) }
+                    .keyboardShortcut(GitKeymap.update)
+                    .disabled(desk.active?.canUpdateFromUpstream != true || desk.active?.activity != nil)
                 Button("Refresh File Status") { desk.active?.refresh(userInitiated: true) }
                     .keyboardShortcut("r")
                     .disabled(desk.active == nil || desk.active?.activity != nil)
