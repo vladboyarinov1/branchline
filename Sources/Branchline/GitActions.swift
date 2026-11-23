@@ -10,6 +10,40 @@ struct GitAction: Identifiable {
     let run: () -> Void
 }
 
+extension GitTracking {
+    var isEmpty: Bool { ahead == 0 && behind == 0 }
+
+    var accessibilitySummary: String {
+        [ahead > 0 ? "К отправке: \(ahead)" : nil, behind > 0 ? "Входящих: \(behind)" : nil]
+            .compactMap { $0 }.joined(separator: ", ")
+    }
+}
+
+struct BranchSyncBadge: View {
+    let tracking: GitTracking
+
+    var body: some View {
+        HStack(spacing: 5) {
+            if tracking.ahead > 0 {
+                count(tracking.ahead, icon: "arrow.up.right", color: Palette.green)
+            }
+            if tracking.behind > 0 {
+                count(tracking.behind, icon: "arrow.down.left", color: Palette.blue)
+            }
+        }
+        .fixedSize()
+        .accessibilityHidden(true)
+    }
+
+    private func count(_ value: Int, icon: String, color: Color) -> some View {
+        HStack(spacing: 2) {
+            Image(systemName: icon).font(.system(size: 8, weight: .semibold))
+            Text(value.formatted()).font(.system(size: 10, weight: .medium).monospacedDigit())
+        }
+        .foregroundStyle(color)
+    }
+}
+
 struct GitActionPicker: View {
     let title: String
     let actions: [GitAction]
@@ -145,10 +179,17 @@ struct GitBranchPicker: View {
         if !refs.isEmpty {
             Section(title) {
                 ForEach(refs) { ref in
-                    Label(ref.name, systemImage: ref.isCurrent ? "checkmark" : (kind == .tag ? "tag" : "arrow.triangle.branch"))
+                    HStack(spacing: 8) {
+                        Label(ref.name, systemImage: ref.isCurrent ? "checkmark" : (kind == .tag ? "tag" : "arrow.triangle.branch"))
+                        Spacer(minLength: 3)
+                        if !ref.tracking.isEmpty { BranchSyncBadge(tracking: ref.tracking) }
+                    }
                         .font(.system(size: 12))
                         .lineLimit(1)
-                        .accessibilityValue(ref.isCurrent ? "Текущая ветка" : "")
+                        .accessibilityElement(children: .ignore)
+                        .accessibilityLabel(ref.name)
+                        .accessibilityValue([ref.isCurrent ? "Текущая ветка" : "", ref.tracking.accessibilitySummary]
+                            .filter { !$0.isEmpty }.joined(separator: ", "))
                         .help(ref.name)
                         .tag(ref.id)
                         .contextMenu {

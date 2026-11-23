@@ -330,6 +330,7 @@ struct RepositoryView<ProjectTabs: View>: View {
                 .accessibilityHidden(true)
                 Text(label ?? ref.name).lineLimit(1).truncationMode(.middle)
                 Spacer(minLength: 3)
+                if !ref.tracking.isEmpty { BranchSyncBadge(tracking: ref.tracking) }
                 if workspace.favoriteRefs.contains(ref.id) {
                     Image(systemName: "star.fill").foregroundStyle(Palette.yellow).font(.system(size: 8))
                         .accessibilityLabel("Избранная ветка")
@@ -347,6 +348,7 @@ struct RepositoryView<ProjectTabs: View>: View {
         }
         .buttonStyle(.plain)
         .help(ref.name)
+        .accessibilityValue(ref.tracking.accessibilitySummary)
         .accessibilityAddTraits(selected ? .isSelected : [])
         .contextMenu {
             ForEach(branchActions(ref)) { action in
@@ -359,6 +361,7 @@ struct RepositoryView<ProjectTabs: View>: View {
     private var workspaceBar: some View {
         let ahead = workspace.status?.ahead ?? 0
         let behind = workspace.status?.behind ?? 0
+        let tracking = GitTracking(ahead: ahead, behind: behind)
         let progress = workspace.isUpdatingIndex ? nil : (workspace.activity ?? (loadingRemotes ? "Читаем список remote" : nil))
         return HStack(spacing: 7) {
             projectTabs
@@ -389,6 +392,7 @@ struct RepositoryView<ProjectTabs: View>: View {
                     Text(workspace.branch.count > 22
                          ? String(workspace.branch.prefix(10)) + "…" + String(workspace.branch.suffix(11))
                          : workspace.branch)
+                    if !tracking.isEmpty { BranchSyncBadge(tracking: tracking) }
                     Image(systemName: "chevron.down").font(.system(size: 7, weight: .semibold))
                 }
                 .fixedSize(horizontal: true, vertical: false)
@@ -396,13 +400,9 @@ struct RepositoryView<ProjectTabs: View>: View {
             .buttonStyle(StudioButton(kind: .quiet))
             .workbenchHint(workspace.status?.upstream.map { "Git Branches · \($0)" } ?? "Git Branches")
             .accessibilityLabel("Git Branches, \(workspace.branch)")
+            .accessibilityValue(tracking.accessibilitySummary)
             Button { workspace.pull() } label: {
-                HStack(spacing: 4) {
-                    Image(systemName: "arrow.down.to.line").frame(width: 14)
-                    if behind > 0 {
-                        Text(behind.formatted()).monospacedDigit()
-                    }
-                }
+                Image(systemName: "arrow.down.to.line").frame(width: 14)
             }
             .buttonStyle(StudioButton(kind: .quiet, keepsEnabledAppearance: workspace.isUpdatingIndex && canUpdateWhenIdle))
             .accessibilityLabel("Update Project")
@@ -411,12 +411,7 @@ struct RepositoryView<ProjectTabs: View>: View {
             .workbenchHint(behind > 0 ? "Update Project · Входящих коммитов: \(behind)" : "Update Project",
                            shortcut: GitKeymap.update)
             Button(action: preparePush) {
-                HStack(spacing: 6) {
-                    Text("Push")
-                    if ahead > 0 {
-                        Text(ahead.formatted()).monospacedDigit().foregroundStyle(Palette.green)
-                    }
-                }
+                Text("Push")
             }
             .buttonStyle(StudioButton(keepsEnabledAppearance: workspace.isUpdatingIndex && canPushWhenIdle))
             .accessibilityLabel("Push")
@@ -431,9 +426,11 @@ struct RepositoryView<ProjectTabs: View>: View {
     }
 
     private func operationBar(_ operation: GitOperation) -> some View {
-        HStack(spacing: 8) {
+        let conflicts = workspace.unstaged.contains(where: { $0.unstaged == .conflicted })
+        return HStack(spacing: 8) {
             Image(systemName: "exclamationmark.triangle").foregroundStyle(Palette.yellow)
-            Text("\(operation.name) в процессе").font(.system(size: 11, weight: .semibold))
+            Text(conflicts ? "Разрешите конфликты и добавьте файлы в индекс" : "\(operation.name) в процессе")
+                .font(.system(size: 11, weight: .semibold)).lineLimit(1)
             Spacer()
             if workspace.commitMode == .selectedFiles {
                 Button("Git-индекс") {
@@ -445,8 +442,7 @@ struct RepositoryView<ProjectTabs: View>: View {
             }
             Button("Continue") { workspace.finish(operation, abort: false) }
                 .buttonStyle(StudioButton())
-                .disabled(workspace.activity != nil ||
-                          workspace.unstaged.contains(where: { $0.unstaged == .conflicted }))
+                .disabled(workspace.activity != nil || conflicts)
             Button("Abort…") {
                 confirmation = Confirmation(title: "Отменить \(operation.name)?",
                     message: "Git попытается вернуть рабочую копию в состояние до операции. Исправления конфликтов будут потеряны.",
@@ -1182,7 +1178,7 @@ struct RepositoryView<ProjectTabs: View>: View {
                       shortcut: GitKeymap.commitAndPush, enabled: mutable) { handle(.commitAndPush) },
             GitAction(title: "Push…", detail: "Отправить коммиты", icon: "arrow.up",
                       shortcut: GitKeymap.push, enabled: canPush) { preparePush() },
-            GitAction(title: "Update Project", detail: "Подтянуть текущую ветку fast-forward", icon: "arrow.down.to.line",
+            GitAction(title: "Update Project", detail: "Получить удалённые коммиты и объединить с текущей веткой", icon: "arrow.down.to.line",
                       shortcut: GitKeymap.update, enabled: canUpdate) { handle(.update) },
             GitAction(title: "Fetch", detail: "Получить удалённые ссылки", icon: "tray.and.arrow.down",
                       enabled: mutable) { workspace.fetch() },

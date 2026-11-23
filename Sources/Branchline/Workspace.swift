@@ -66,6 +66,14 @@ final class Workspace {
         let path: String?
     }
 
+    private struct HistoryTracking {
+        let head: String
+        let upstream: String
+        let directions: [String: GitSyncDirection]
+    }
+
+    @ObservationIgnored private var historyTracking: HistoryTracking?
+
     private struct DetailRequest: Equatable {
         let mode: WorkspaceMode
         let hash: String
@@ -288,6 +296,7 @@ final class Workspace {
         hasWorkingStatus = false
         if !entries.isEmpty { restoreHistoryCount = entries.count }
         entries = []
+        historyTracking = nil
         refs = []
         status?.files = []
         detail = nil
@@ -454,6 +463,7 @@ final class Workspace {
         if hasConflicts && !commitToolVisible {
             commitToolVisible = true
         }
+        if hasConflicts && activity != nil { projectFiles?.visible = false }
         if !choosesInitialFile && (mode == .changes || focusIsWorkingFile) {
             let focusedPathChanged = focus.map {
                 changes.affectsWorkingPatch(for: $0.file.path, originalPath: $0.file.originalPath)
@@ -574,7 +584,9 @@ final class Workspace {
             }
             do {
                 if debounce { try await Task.sleep(for: .milliseconds(240)) }
-                let commits = try await git.log(ref: ref, skip: start, limit: take + 1, search: query, author: author, path: filePath)
+                async let result = git.log(ref: ref, skip: start, limit: take + 1, search: query, author: author, path: filePath)
+                let directions = await historySyncDirections(in: git, reference: ref)
+                let commits = try await result
                 try Task.checkCancellation()
                 guard isFront, mode == .history, comparedRef == nil, self.git?.root == git.root else { return }
                 let refsByCommit = Dictionary(grouping: refs, by: \.hash)
@@ -585,7 +597,7 @@ final class Workspace {
                                      if ref.isCurrent { return "HEAD -> " + ref.name }
                                      if ref.kind == .tag { return "tag: " + ref.name }
                                      return ref.name
-                                 }, isMerge: commit.parents.count > 1)
+                                 }, isMerge: commit.parents.count > 1, syncDirection: directions[commit.hash])
                 }
                 historyOffset = start + page.count
                 hasMore = commits.count > take
@@ -620,6 +632,25 @@ final class Workspace {
                 }
             }
         }
+    }
+
+    private func historySyncDirections(in git: Git, reference: String?) async -> [String: GitSyncDirection] {
+        let branch = refs.first(where: { $0.kind == .local && $0.fullName == reference })
+            ?? refs.first(where: \.isCurrent)
+        guard let branch, branch.tracking.ahead > 0 || branch.tracking.behind > 0,
+              let upstreamRef = branch.upstream,
+              let upstream = refs.first(where: { $0.fullName == upstreamRef })?.hash else {
+            historyTracking = nil
+            return [:]
+        }
+        let head = branch.hash
+        if let cached = historyTracking, cached.head == head, cached.upstream == upstream {
+            return cached.directions
+        }
+        guard let directions = try? await git.syncDirections(head: head, upstream: upstream),
+              !Task.isCancelled else { return [:] }
+        historyTracking = HistoryTracking(head: head, upstream: upstream, directions: directions)
+        return directions
     }
 
     func selectCommit(_ hash: String?, revealDiff: Bool = false) {
@@ -1010,7 +1041,12 @@ final class Workspace {
     }
 
     func fetch() { perform("Получаем ссылки", success: "Fetch завершён") { try await $0.fetch() } }
-    func pull() { perform("Получаем коммиты", success: "Pull завершён") { try await $0.pull() } }
+    func pull() {
+        guard let branch = status?.branch, status?.upstream != nil, operation == nil else { return }
+        perform("Обновляем ветку", success: "Ветка обновлена", conflictOperation: .merge) {
+            try await $0.pull(expectedBranch: branch)
+        }
+    }
     func push(to remote: String?, branch: String, upstream: String?) {
         perform("Отправляем коммиты", success: "Push завершён") { git in
             if let remote { try await git.push(setUpstreamTo: remote, expectedBranch: branch) }
@@ -1078,7 +1114,8 @@ final class Workspace {
     }
 
     private func perform(_ label: String, success: String?, changes: RepositoryChanges = .everything,
-                         updatingIndex: Bool = false, action: @escaping (Git) async throws -> Void) {
+                         updatingIndex: Bool = false, conflictOperation: GitOperation? = nil,
+                         action: @escaping (Git) async throws -> Void) {
         guard let git, activity == nil else { return }
         isUpdatingIndex = updatingIndex
         activity = label
@@ -1101,7 +1138,13 @@ final class Workspace {
             do {
                 try await action(git)
                 if let success { feedback = success }
-            } catch { report(label, error) }
+            } catch {
+                if let conflictOperation, gitDirectory.flatMap({ GitOperation.detect(in: $0) }) == conflictOperation {
+                    updateOperation()
+                } else {
+                    report(label, error)
+                }
+            }
 
             // Publish status and its selected file together using one authoritative post-write read.
             var invalidation = changes

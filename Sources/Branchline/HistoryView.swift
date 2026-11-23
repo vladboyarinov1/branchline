@@ -9,6 +9,7 @@ struct HistoryEntry: Identifiable, Equatable, Sendable {
     let date: Date
     let refs: [String]
     var isMerge = false
+    var syncDirection: GitSyncDirection? = nil
 }
 
 struct HistoryAction {
@@ -421,7 +422,7 @@ private struct HistoryRow: View, Equatable {
     var body: some View {
         HStack(spacing: HistoryColumns.spacing) {
             if columns.graph > 0 {
-                HistoryGraphCell(row: graphRow, selected: selected)
+                HistoryGraphCell(row: graphRow, selected: selected, syncDirection: entry.syncDirection)
                     .frame(width: columns.graph)
                     .accessibilityHidden(true)
             }
@@ -458,14 +459,22 @@ private struct HistoryRow: View, Equatable {
     }
 
     var toolTip: String {
-        ([subject, entry.author, entry.date.formatted(Self.timestamp), entry.id] + entry.refs)
+        ([subject, entry.author, entry.date.formatted(Self.timestamp), entry.id] + entry.refs + syncStatus)
             .joined(separator: "\n")
     }
 
     var accessibilitySummary: String {
         var parts = [subject, entry.author, entry.date.formatted(Self.timestamp), "Хеш \(entry.id)"]
-        parts.append(contentsOf: entry.refs)
+        parts.append(contentsOf: entry.refs + syncStatus)
         return parts.joined(separator: ", ")
+    }
+
+    private var syncStatus: [String] {
+        switch entry.syncDirection {
+        case .outgoing: ["Локальный коммит к отправке"]
+        case .incoming: ["Входящий коммит удалённой ветки"]
+        case nil: []
+        }
     }
 
     private var message: some View {
@@ -662,12 +671,19 @@ struct HistoryGraph {
 private struct HistoryGraphCell: View {
     var row: HistoryGraph.Row?
     var selected: Bool
+    var syncDirection: GitSyncDirection?
 
     var body: some View {
         Canvas { context, size in
             guard let row else { return }
             let middle = size.height / 2
             let laneOpacity = 0.84
+            let syncColor: Color? = switch syncDirection {
+            case .outgoing: Palette.green
+            case .incoming: Palette.blue
+            case nil: nil
+            }
+            let stroke = StrokeStyle(lineWidth: 1.3, dash: syncColor == nil ? [] : [2.5, 2.5])
             func x(_ column: Int) -> CGFloat { CGFloat(column) * 8 + 8 }
 
             row.forEachThrough { lane, lineColor in
@@ -684,7 +700,7 @@ private struct HistoryGraphCell: View {
                     path.move(to: CGPoint(x: node.x, y: 0))
                     path.addLine(to: node)
                 }
-                context.stroke(path, with: .color(color(row.color).opacity(laneOpacity)), lineWidth: 1.3)
+                context.stroke(path, with: .color((syncColor ?? color(row.color)).opacity(laneOpacity)), style: stroke)
             }
             row.forEachOutgoing { lane, lineColor in
                 let target = CGPoint(x: x(lane), y: size.height)
@@ -696,7 +712,7 @@ private struct HistoryGraphCell: View {
                         control2: CGPoint(x: target.x, y: middle + 6)
                     )
                 }
-                context.stroke(path, with: .color(color(lineColor).opacity(laneOpacity)), lineWidth: 1.3)
+                context.stroke(path, with: .color((syncColor ?? color(lineColor)).opacity(laneOpacity)), style: stroke)
             }
             let diameter: CGFloat = row.hasMultipleOutgoing ? 7.5 : 6
             let dot = CGRect(
@@ -704,9 +720,15 @@ private struct HistoryGraphCell: View {
             )
             if selected {
                 let ring = Path(ellipseIn: dot.insetBy(dx: -2, dy: -2))
-                context.stroke(ring, with: .color(color(row.color).opacity(0.8)), lineWidth: 1)
+                context.stroke(ring, with: .color((syncColor ?? color(row.color)).opacity(0.8)), lineWidth: 1)
             }
-            context.fill(Path(ellipseIn: dot), with: .color(color(row.color)))
+            let marker = Path(ellipseIn: dot)
+            if let syncColor {
+                context.fill(marker, with: .color(selected ? Palette.selection : Palette.panel))
+                context.stroke(marker, with: .color(syncColor), lineWidth: 1.5)
+            } else {
+                context.fill(marker, with: .color(color(row.color)))
+            }
         }
     }
 

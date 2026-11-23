@@ -38,6 +38,15 @@ enum GitRefKind: Hashable, Sendable {
     case local, remote, tag
 }
 
+struct GitTracking: Hashable, Sendable {
+    var ahead = 0
+    var behind = 0
+}
+
+enum GitSyncDirection: Hashable, Sendable {
+    case outgoing, incoming
+}
+
 struct GitRef: Identifiable, Hashable, Sendable {
     let fullName: String
     let name: String
@@ -45,6 +54,8 @@ struct GitRef: Identifiable, Hashable, Sendable {
     let kind: GitRefKind
     let isCurrent: Bool
     let remote: String?
+    var upstream: String? = nil
+    var tracking = GitTracking()
 
     var id: String { fullName }
 }
@@ -237,12 +248,13 @@ struct Git: Sendable {
 
     func refs() async throws -> [GitRef] {
         let result = try await read([
-            "for-each-ref", "--sort=refname", "--format=%(refname)%00%(objectname)%00%(*objectname)%00%(HEAD)%00%(symref)",
+            "for-each-ref", "--sort=refname",
+            "--format=%(refname)%00%(objectname)%00%(*objectname)%00%(HEAD)%00%(symref)%00%(upstream)%00%(upstream:track,nobracket)",
             "refs/heads", "refs/remotes", "refs/tags",
         ])
         return result.string.split(separator: "\n").compactMap { line in
             let parts = line.split(separator: "\0", omittingEmptySubsequences: false)
-            guard parts.count == 5, parts[4].isEmpty else { return nil }
+            guard parts.count == 7, parts[4].isEmpty else { return nil }
             let fullName = String(parts[0])
             let hash = String(parts[2].isEmpty ? parts[1] : parts[2])
             let kind: GitRefKind
@@ -261,8 +273,27 @@ struct Git: Sendable {
             }
             let name = String(fullName.dropFirst(prefix.count))
             let remote = kind == .remote ? name.split(separator: "/", maxSplits: 1).first.map(String.init) : nil
-            return GitRef(fullName: fullName, name: name, hash: hash, kind: kind, isCurrent: parts[3] == "*", remote: remote)
+            var tracking = GitTracking()
+            for fragment in parts[6].split(separator: ",") {
+                let words = fragment.split(separator: " ")
+                guard words.count == 2, let count = Int(words[1]) else { continue }
+                if words[0] == "ahead" { tracking.ahead = count }
+                if words[0] == "behind" { tracking.behind = count }
+            }
+            return GitRef(fullName: fullName, name: name, hash: hash, kind: kind, isCurrent: parts[3] == "*",
+                          remote: remote, upstream: parts[5].isEmpty ? nil : String(parts[5]), tracking: tracking)
         }
+    }
+
+    func syncDirections(head: String, upstream: String) async throws -> [String: GitSyncDirection] {
+        let result = try await read(["rev-list", "--left-right", "--end-of-options", "\(head)...\(upstream)", "--"])
+        return Dictionary(uniqueKeysWithValues: result.string.split(separator: "\n").compactMap { line in
+            switch line.first {
+            case "<": (String(line.dropFirst()), .outgoing)
+            case ">": (String(line.dropFirst()), .incoming)
+            default: nil
+            }
+        })
     }
 
     func log(ref: String?, skip: Int = 0, limit: Int = 150, search: String = "", author: String? = nil, path: String? = nil) async throws -> [GitCommit] {
@@ -581,8 +612,11 @@ struct Git: Sendable {
         try await write(["fetch", "--all", "--no-prune", "--no-prune-tags"])
     }
 
-    func pull() async throws {
-        try await write(["pull", "--ff-only", "--no-rebase", "--no-autostash", "--no-squash", "--no-prune"])
+    func pull(expectedBranch: String? = nil) async throws {
+        _ = try await currentBranch(expected: expectedBranch)
+        let directory = try await gitDirectory()
+        guard GitOperation.detect(in: directory) == nil else { throw GitError.operationInProgress }
+        try await write(["pull", "--no-rebase", "--ff", "--no-edit", "--commit", "--no-autostash", "--no-squash", "--no-prune"])
     }
 
     func push(expectedBranch: String? = nil, expectedUpstream: String? = nil) async throws {
@@ -899,6 +933,7 @@ private final class GitProcess: @unchecked Sendable {
         let path = environment["PATH"] ?? "/usr/bin:/bin:/usr/sbin:/sbin"
         environment["PATH"] = "\(path):/opt/homebrew/bin:/usr/local/bin"
         environment["GIT_TERMINAL_PROMPT"] = "0"
+        if arguments.first == "for-each-ref" { environment["LC_ALL"] = "C" }
         if readOnly { environment["GIT_OPTIONAL_LOCKS"] = "0" }
         if defaultEditor {
             environment["GIT_EDITOR"] = "/usr/bin/true"
