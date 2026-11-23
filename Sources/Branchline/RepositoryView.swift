@@ -747,6 +747,7 @@ struct RepositoryView<ProjectTabs: View>: View {
         }
         let included: Bool? = if case .working = context { workspace.isIncluded(file) } else { nil }
         let selected = workspace.focus?.id == FileFocus(file: file, context: context).id
+        let path = file.originalPath.map { "\($0) → \(file.path)" } ?? file.path
         return HStack(spacing: 1) {
             if let included {
                 let title = "\(inclusionAction(included)) · \(file.name)"
@@ -769,15 +770,6 @@ struct RepositoryView<ProjectTabs: View>: View {
                 if context.isWorkingFile { changesFocused = true }
             } label: {
                 HStack(spacing: 6) {
-                    if let change {
-                        Text(change.badge)
-                            .font(.system(size: 10, weight: .semibold, design: .monospaced))
-                            .frame(width: 15)
-                            .foregroundStyle(change.tint)
-                            .accessibilityLabel(change.label)
-                    } else {
-                        Color.clear.frame(width: 15).accessibilityHidden(true)
-                    }
                     FileTypeIcon(name: file.name)
                     Text(file.name)
                         .font(.system(size: 12, weight: selected ? .semibold : .regular))
@@ -798,7 +790,8 @@ struct RepositoryView<ProjectTabs: View>: View {
                 .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
-            .help(file.originalPath.map { "\($0) → \(file.path)" } ?? file.path)
+            .help(change.map { "\($0.label) · \(path)" } ?? path)
+            .accessibilityValue(change?.label ?? "")
             .accessibilityAddTraits(selected ? .isSelected : [])
         }
         .background(selected ? Palette.selection : .clear, in: RoundedRectangle(cornerRadius: 4))
@@ -1583,7 +1576,6 @@ private struct RefGroup<Content: View>: View {
 }
 
 private extension GitChange {
-    var badge: String { self == .untracked ? "?" : rawValue }
     var label: String {
         switch self {
         case .modified: "Изменён"
@@ -1594,14 +1586,6 @@ private extension GitChange {
         case .typeChanged: "Изменён тип файла"
         case .untracked: "Новый файл"
         case .conflicted: "Конфликт"
-        }
-    }
-    var tint: Color {
-        switch self {
-        case .added, .untracked: Palette.green
-        case .deleted, .conflicted: Palette.red
-        case .renamed, .copied: Palette.lavender
-        case .modified, .typeChanged: Palette.yellow
         }
     }
 }
