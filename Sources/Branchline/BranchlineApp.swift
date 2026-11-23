@@ -41,7 +41,11 @@ struct BranchlineApp: App {
                 gitCommand("Commit…", action: .commit, shortcut: GitKeymap.commit)
                 gitCommand("Commit and Push…", action: .commitAndPush, shortcut: GitKeymap.commitAndPush)
                 gitCommand("Push…", action: .push, shortcut: GitKeymap.push)
-                Button("Fetch") { desk.active?.fetch() }.disabled(desk.active == nil || desk.active?.activity != nil)
+                if desk.active?.fetchState == .running {
+                    Button("Cancel Fetch") { desk.active?.cancelFetch() }
+                } else {
+                    Button("Fetch") { desk.active?.fetch() }.disabled(desk.active == nil || desk.active?.activity != nil)
+                }
                 Button("Update Project") { desk.active?.send(.update) }
                     .keyboardShortcut(GitKeymap.update)
                     .disabled(desk.active?.canUpdateFromUpstream != true || desk.active?.activity != nil)
@@ -61,7 +65,6 @@ struct BranchlineApp: App {
                 gitCommand("Find Action…", action: .findAction, shortcut: GitKeymap.findAction)
                 Button("Branches…") { desk.active?.send(.branches) }.disabled(desk.active == nil)
                 Button("Stash") { desk.active?.activate(.stash) }.disabled(desk.active == nil)
-                Button("Worktrees") { desk.active?.activate(.worktrees) }.disabled(desk.active == nil)
                 Button("Keyboard Shortcuts") { desk.active?.send(.keymap) }.disabled(desk.active == nil)
             }
             CommandGroup(after: .toolbar) {
@@ -118,7 +121,7 @@ private struct MainWindow: View {
     var body: some View {
         VStack(spacing: 0) {
             if let workspace = desk.active {
-                RepositoryView(workspace: workspace, openWorktree: desk.open) {
+                RepositoryView(workspace: workspace) {
                     projectTabs
                 }
                 .id(desk.activeID)

@@ -91,15 +91,24 @@ struct GitStash: Identifiable, Hashable, Sendable {
     var id: String { ref }
 }
 
-struct GitWorktree: Identifiable, Hashable, Sendable {
-    let path: String
-    var branch: String? = nil
-    var hash: String? = nil
-    var isBare = false
-    var isLocked = false
-    var isPrunable = false
+enum GitResetMode: String, CaseIterable, Identifiable, Sendable {
+    case soft, mixed, hard, keep
 
-    var id: String { path }
+    var id: Self { self }
+}
+
+struct GitPushPreview: Sendable {
+    let branch: String
+    let head: String
+    let upstream: String?
+    let remote: String
+    let remoteRef: String
+    let destinationHead: String?
+    let commits: [GitCommit]
+    let hasMore: Bool
+    let requiresUpdate: Bool
+
+    var canPush: Bool { !requiresUpdate && (upstream == nil || destinationHead != head) }
 }
 
 enum GitOperation: String, Sendable {
@@ -625,27 +634,79 @@ struct Git: Sendable {
         try await write(["merge", "--ff", "--no-edit", "--commit", "--no-autostash", "--no-squash", "--", upstream])
     }
 
-    func push(expectedBranch: String? = nil, expectedUpstream: String? = nil) async throws {
-        let branch = try await currentBranch(expected: expectedBranch)
-        let format = "%(upstream:remotename)%00%(upstream:remoteref)%00%(upstream:short)"
-        let result = try await read(["for-each-ref", "--count=1", "--format=\(format)", branch])
-        let upstream = result.string.trimmingCharacters(in: .newlines).split(separator: "\0", omittingEmptySubsequences: false)
-        guard upstream.count == 3, !upstream[0].isEmpty, upstream[1].hasPrefix("refs/heads/") else {
-            throw GitError.noUpstream
+    func reset(to hash: String, mode: GitResetMode, expectedBranch: String, expectedHead: String) async throws {
+        guard (hash.count == 40 || hash.count == 64), hash.utf8.allSatisfy(Self.isHexDigit) else {
+            throw GitError.invalidResponse
         }
-        if let expectedUpstream, upstream[2] != expectedUpstream { throw GitError.destinationChanged }
-        try await write(["push", "--no-follow-tags", "--recurse-submodules=no", "--", String(upstream[0]), "\(branch):\(upstream[1])"])
+        let directory = try await gitDirectory()
+        guard GitOperation.detect(in: directory) == nil else { throw GitError.operationInProgress }
+        _ = try await currentBranch(expected: expectedBranch)
+        guard try await commitHash("HEAD") == expectedHead else { throw GitError.operationChanged }
+        try await write(["reset", "--\(mode.rawValue)", hash, "--"])
+    }
+
+    func pushPreview(branch: String, head: String, upstream: String?, remote: String?) async throws -> GitPushPreview {
+        let localRef = try await currentBranch(expected: branch)
+        let destination = try await pushDestination(localRef, upstream: upstream, remote: remote)
+        let destinationHead = try await commitHash(destination.trackingRef)
+        let requiresUpdate: Bool
+        let revisionArgs: [String]
+        if let destinationHead {
+            let ancestor = try await read(["merge-base", "--is-ancestor", destinationHead, head], allowed: [0, 1])
+            requiresUpdate = ancestor.status == 1
+            revisionArgs = ["\(destinationHead)..\(head)"]
+        } else {
+            requiresUpdate = false
+            revisionArgs = [head, "--not", "--remotes=\(destination.remote)"]
+        }
+        let limit = 100
+        let output = try await read(["log", "--max-count=\(limit + 1)", "--no-show-signature", "-z", "--format=\(Self.commitFormat)"]
+                                    + revisionArgs + ["--"])
+        let commits = try Self.commits(output.data)
+        guard try await commitHash(localRef) == head else { throw GitError.operationChanged }
+        return GitPushPreview(branch: branch, head: head, upstream: upstream, remote: destination.remote,
+                              remoteRef: destination.remoteRef, destinationHead: destinationHead,
+                              commits: Array(commits.prefix(limit)), hasMore: commits.count > limit,
+                              requiresUpdate: requiresUpdate)
+    }
+
+    func push(_ preview: GitPushPreview) async throws {
+        let branch = try await currentBranch(expected: preview.branch)
+        let destination = try await pushDestination(branch, upstream: preview.upstream,
+                                                    remote: preview.upstream == nil ? preview.remote : nil)
+        guard preview.canPush, destination.remote == preview.remote, destination.remoteRef == preview.remoteRef,
+              try await commitHash(destination.trackingRef) == preview.destinationHead,
+              try await commitHash(branch) == preview.head else { throw GitError.destinationChanged }
+        var options = ["push", "--no-follow-tags", "--recurse-submodules=no"]
+        if preview.upstream == nil { options.append("--set-upstream") }
+        try await write(options + ["--", destination.remote, "\(branch):\(destination.remoteRef)"])
     }
 
     func remotes() async throws -> [String] {
         try await read(["remote"]).string.split(separator: "\n").map(String.init)
     }
 
-    func push(setUpstreamTo remote: String, expectedBranch: String? = nil) async throws {
-        let branch = try await currentBranch(expected: expectedBranch)
-        let configured = try await remotes()
-        guard configured.contains(remote) else { throw GitError.noUpstream }
-        try await write(["push", "--no-follow-tags", "--recurse-submodules=no", "--set-upstream", "--", remote, "\(branch):\(branch)"])
+    private func pushDestination(_ branch: String, upstream: String?, remote: String?) async throws
+        -> (remote: String, remoteRef: String, trackingRef: String) {
+        let format = "%(upstream:remotename)%00%(upstream:remoteref)%00%(upstream:short)%00%(upstream)"
+        let result = try await read(["for-each-ref", "--count=1", "--format=\(format)", branch])
+        let fields = result.string.trimmingCharacters(in: .newlines).split(separator: "\0", omittingEmptySubsequences: false)
+        guard fields.count == 4 else { throw GitError.noUpstream }
+        if let upstream {
+            guard fields[2] == upstream else { throw GitError.destinationChanged }
+            guard !fields[0].isEmpty, fields[1].hasPrefix("refs/heads/"), !fields[3].isEmpty else {
+                throw GitError.noUpstream
+            }
+            return (String(fields[0]), String(fields[1]), String(fields[3]))
+        }
+        guard fields[2].isEmpty else { throw GitError.destinationChanged }
+        guard let remote, try await remotes().contains(remote) else { throw GitError.noUpstream }
+        return (remote, branch, "refs/remotes/\(remote)/\(branch.dropFirst("refs/heads/".count))")
+    }
+
+    private func commitHash(_ revision: String) async throws -> String? {
+        let result = try await read(["rev-parse", "--verify", "--quiet", "--end-of-options", "\(revision)^{commit}"], allowed: [0, 1])
+        return result.status == 0 ? result.string.trimmingCharacters(in: .newlines) : nil
     }
 
     func stashes() async throws -> [GitStash] {
@@ -679,22 +740,6 @@ struct Git: Sendable {
 
     func applyStash(_ stash: GitStash) async throws {
         try await write(["stash", "apply", "--index", stash.hash])
-    }
-
-    func worktrees() async throws -> [GitWorktree] {
-        let result = try await read(["worktree", "list", "--porcelain", "-z"])
-        return Self.fields(result.data).split(separator: "").compactMap { fields in
-            guard let entry = fields.first, entry.hasPrefix("worktree ") else { return nil }
-            var worktree = GitWorktree(path: String(entry.dropFirst("worktree ".count)))
-            for field in fields.dropFirst() {
-                if field.hasPrefix("HEAD ") { worktree.hash = String(field.dropFirst("HEAD ".count)) }
-                if field.hasPrefix("branch refs/heads/") { worktree.branch = String(field.dropFirst("branch refs/heads/".count)) }
-                if field == "bare" { worktree.isBare = true }
-                if field == "locked" || field.hasPrefix("locked ") { worktree.isLocked = true }
-                if field == "prunable" || field.hasPrefix("prunable ") { worktree.isPrunable = true }
-            }
-            return worktree
-        }
     }
 
     private func exactLog(_ hash: String, options: [String], skip: Int, limit: Int, path: String?, ref: String?) async throws -> [GitCommit] {
@@ -894,6 +939,7 @@ private final class GitProcess: @unchecked Sendable {
     private let lock = NSLock()
     private var process: Process?
     private var cancelled = false
+    private var fetchGroup: pid_t?
     private var stderr = Data()
 
     private static let queue = DispatchQueue(label: "Branchline.Git.Process", qos: .userInitiated, attributes: .concurrent)
@@ -959,8 +1005,17 @@ private final class GitProcess: @unchecked Sendable {
             if cancelled { throw CancellationError() }
             try process.run()
             self.process = process
+            let pid = process.processIdentifier
+            if arguments.first == "fetch", pid > 0, getpgid(pid) == pid {
+                fetchGroup = pid
+            }
         }
-        defer { lock.withLock { self.process = nil } }
+        defer {
+            lock.withLock {
+                self.process = nil
+                fetchGroup = nil
+            }
+        }
 
         let drain = DispatchGroup()
         drain.enter()
@@ -983,8 +1038,19 @@ private final class GitProcess: @unchecked Sendable {
 
     private func cancel() {
         lock.withLock {
+            guard !cancelled else { return }
             cancelled = true
-            terminateProcess()
+            guard let group = fetchGroup else {
+                terminateProcess()
+                return
+            }
+            // SSH and credential helpers may keep the output pipes open after Git exits.
+            kill(-group, SIGTERM)
+            Self.queue.asyncAfter(deadline: .now() + .milliseconds(500)) { [self] in
+                lock.withLock {
+                    if fetchGroup == group { kill(-group, SIGKILL) }
+                }
+            }
         }
     }
 

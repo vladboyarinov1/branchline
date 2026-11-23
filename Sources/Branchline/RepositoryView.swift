@@ -3,7 +3,6 @@ import SwiftUI
 
 struct RepositoryView<ProjectTabs: View>: View {
     @Bindable var workspace: Workspace
-    let openWorktree: (URL) -> Void
     let projectTabs: ProjectTabs
     @State private var sheet: ActionSheet?
     @State private var loadingRemotes = false
@@ -22,10 +21,8 @@ struct RepositoryView<ProjectTabs: View>: View {
     @State private var dockDragHeight: CGFloat?
     @FocusState private var changesFocused: Bool
 
-    init(workspace: Workspace, openWorktree: @escaping (URL) -> Void,
-         @ViewBuilder projectTabs: () -> ProjectTabs) {
+    init(workspace: Workspace, @ViewBuilder projectTabs: () -> ProjectTabs) {
         self.workspace = workspace
-        self.openWorktree = openWorktree
         self.projectTabs = projectTabs()
     }
 
@@ -39,7 +36,7 @@ struct RepositoryView<ProjectTabs: View>: View {
 
     private enum ActionSheet: Identifiable {
         case branch(GitRef?), rename(GitRef), stash, push(PushDestination, [String]), actions(Bool), branches, keymap
-        case editFile(URL, String)
+        case editFile(URL, String), reset(HistoryEntry, branch: String, head: String)
         var id: Int {
             switch self {
             case .branch: 0
@@ -50,6 +47,7 @@ struct RepositoryView<ProjectTabs: View>: View {
             case .branches: 5
             case .keymap: 6
             case .editFile: 7
+            case .reset: 8
             }
         }
     }
@@ -57,7 +55,7 @@ struct RepositoryView<ProjectTabs: View>: View {
     private struct PushDestination {
         let branch: String
         let upstream: String?
-        let ahead: Int
+        let head: String
     }
 
     private enum ChangeGroup: String {
@@ -118,9 +116,15 @@ struct RepositoryView<ProjectTabs: View>: View {
                     name, _ in workspace.stash(name)
                 }
             case .push(let destination, let remotes):
-                PushSheet(branch: destination.branch, upstream: destination.upstream,
-                          ahead: destination.ahead, remotes: remotes) {
-                    workspace.push(to: $0, branch: destination.branch, upstream: destination.upstream)
+                if let git = workspace.git {
+                    PushSheet(branch: destination.branch, upstream: destination.upstream, remotes: remotes, load: { remote in
+                        try await git.pushPreview(branch: destination.branch, head: destination.head,
+                                                  upstream: destination.upstream, remote: remote)
+                    }, action: workspace.push)
+                }
+            case .reset(let entry, let branch, let head):
+                ResetSheet(branch: branch, hash: String(entry.id.prefix(8)), subject: entry.subject) {
+                    workspace.reset(to: entry.id, mode: $0, branch: branch, head: head)
                 }
             case .actions(let search):
                 GitActionPicker(title: search ? "Find Action" : "VCS Operations",
@@ -171,11 +175,6 @@ struct RepositoryView<ProjectTabs: View>: View {
                 Image(systemName: "archivebox")
             }
             Spacer(minLength: 0)
-            tool("Worktrees", active: workspace.mode == .worktrees, action: {
-                workspace.activate(workspace.mode == .worktrees ? .changes : .worktrees)
-            }) {
-                Image(systemName: "square.on.square")
-            }
             tool("Terminal", active: terminalVisible, shortcut: GitKeymap.terminal, action: { handle(.terminal) }) {
                 Image(systemName: "terminal")
             }
@@ -417,12 +416,20 @@ struct RepositoryView<ProjectTabs: View>: View {
             .workbenchHint(workspace.status?.upstream.map { "Git Branches · \($0)" } ?? "Git Branches")
             .accessibilityLabel("Git Branches, \(workspace.branch)")
             .accessibilityValue(tracking.accessibilitySummary)
-            Button { workspace.fetch() } label: {
-                Label("Fetch", systemImage: "tray.and.arrow.down")
+            Button {
+                if workspace.fetchState == .running { workspace.cancelFetch() }
+                else { workspace.fetch() }
+            } label: {
+                HStack(spacing: 5) {
+                    Image(systemName: workspace.fetchState == nil ? "tray.and.arrow.down" : "xmark")
+                        .frame(width: 14)
+                    Text("Fetch")
+                }
             }
             .buttonStyle(StudioButton(kind: .quiet))
-            .disabled(workspace.activity != nil)
-            .workbenchHint("Fetch · Получить сведения с сервера")
+            .disabled(workspace.activity != nil && workspace.fetchState != .running)
+            .accessibilityLabel(workspace.fetchState == nil ? "Fetch" : "Отменить Fetch")
+            .workbenchHint(workspace.fetchState == nil ? "Fetch · Получить сведения с сервера" : "Отменить Fetch")
             Button { workspace.updateFromUpstream() } label: {
                 Image(systemName: "arrow.down.to.line").frame(width: 14)
             }
@@ -491,44 +498,40 @@ struct RepositoryView<ProjectTabs: View>: View {
         let inset = WorkbenchLayout.gutter / 2
         let showsChangeSidebar = projectVisible || workspace.commitToolVisible
         let showsEditorInset = workspace.comparedRef != nil || workspace.mode == .stash || showsChangeSidebar
-        if workspace.mode == .worktrees {
-            panel { worktreesPane }
-        } else {
-            HSplitView {
-                if workspace.comparedRef != nil {
-                    panel { branchPane }
-                        .frame(minWidth: 162, idealWidth: 184, maxWidth: 235)
-                        .padding(.trailing, inset)
-                        .measureWorkbenchPane()
-                } else if workspace.mode == .stash {
-                    panel { stashPane }
-                        .frame(minWidth: 235, idealWidth: 282, maxWidth: 370)
-                        .padding(.trailing, inset)
-                        .measureWorkbenchPane()
-                } else if showsChangeSidebar {
-                    panel {
-                        if let project = workspace.projectFiles, projectVisible {
-                            ProjectFilesView(model: project, onEdit: editFile)
-                        } else { changesPane }
-                    }
-                        .frame(minWidth: 244, idealWidth: 276, maxWidth: 310)
-                        .padding(.trailing, inset)
-                        .measureWorkbenchPane()
-                }
-                panel { patchPane }
-                    .frame(minWidth: 360, maxWidth: .infinity)
-                    .padding(.leading, showsEditorInset ? inset : 0)
-                    .padding(.trailing, workspace.comparedRef != nil ? inset : 0)
+        HSplitView {
+            if workspace.comparedRef != nil {
+                panel { branchPane }
+                    .frame(minWidth: 162, idealWidth: 184, maxWidth: 235)
+                    .padding(.trailing, inset)
                     .measureWorkbenchPane()
-                if let comparedRef = workspace.comparedRef {
-                    panel { comparisonPane(comparedRef) }
-                        .frame(minWidth: 222, idealWidth: 264, maxWidth: 334)
-                        .padding(.leading, inset)
-                        .measureWorkbenchPane()
+            } else if workspace.mode == .stash {
+                panel { stashPane }
+                    .frame(minWidth: 235, idealWidth: 282, maxWidth: 370)
+                    .padding(.trailing, inset)
+                    .measureWorkbenchPane()
+            } else if showsChangeSidebar {
+                panel {
+                    if let project = workspace.projectFiles, projectVisible {
+                        ProjectFilesView(model: project, onEdit: editFile)
+                    } else { changesPane }
                 }
+                    .frame(minWidth: 244, idealWidth: 276, maxWidth: 310)
+                    .padding(.trailing, inset)
+                    .measureWorkbenchPane()
             }
-            .paintWorkbenchGutter()
+            panel { patchPane }
+                .frame(minWidth: 360, maxWidth: .infinity)
+                .padding(.leading, showsEditorInset ? inset : 0)
+                .padding(.trailing, workspace.comparedRef != nil ? inset : 0)
+                .measureWorkbenchPane()
+            if let comparedRef = workspace.comparedRef {
+                panel { comparisonPane(comparedRef) }
+                    .frame(minWidth: 222, idealWidth: 264, maxWidth: 334)
+                    .padding(.leading, inset)
+                    .measureWorkbenchPane()
+            }
         }
+        .paintWorkbenchGutter()
     }
 
     private var logDock: some View {
@@ -1101,57 +1104,6 @@ struct RepositoryView<ProjectTabs: View>: View {
         }.background(Palette.panel)
     }
 
-    private var worktreesPane: some View {
-        VStack(spacing: 0) {
-            paneHeading("Worktrees")
-            StudioRule()
-            if workspace.worktrees.isEmpty {
-                if let error = workspace.detailError {
-                    Text(error).font(.system(size: 12)).foregroundStyle(Palette.muted)
-                        .frame(maxWidth: .infinity, maxHeight: .infinity)
-                } else if workspace.isExtrasLoading {
-                    loadingBody("Загружаем рабочие деревья")
-                } else {
-                    Text("Рабочих копий нет")
-                        .font(.system(size: 12)).foregroundStyle(Palette.muted)
-                        .frame(maxWidth: .infinity, maxHeight: .infinity)
-                }
-            } else {
-                ScrollView {
-                    LazyVStack(alignment: .leading, spacing: 1) {
-                        ForEach(workspace.worktrees) { tree in
-                            HStack(spacing: 12) {
-                                Image(systemName: "folder").foregroundStyle(Palette.muted).accessibilityHidden(true)
-                                VStack(alignment: .leading, spacing: 5) {
-                                    Text(tree.branch ?? "Detached HEAD")
-                                        .font(.system(size: 13, weight: .semibold))
-                                    Text(tree.path).foregroundStyle(Palette.muted)
-                                        .font(.system(size: 11, design: .monospaced))
-                                        .lineLimit(1).truncationMode(.middle)
-                                }
-                                Spacer(minLength: 2)
-                                if tree.path == workspace.git?.root.path {
-                                    Text("Текущая копия").foregroundStyle(Palette.muted).font(.system(size: 11))
-                                } else if tree.isBare || tree.isPrunable {
-                                    Text(tree.isBare ? "Bare" : "Папка недоступна")
-                                        .foregroundStyle(Palette.muted).font(.system(size: 11))
-                                } else {
-                                    Button("Открыть во вкладке") {
-                                        openWorktree(URL(fileURLWithPath: tree.path, isDirectory: true))
-                                    }
-                                    .buttonStyle(StudioButton())
-                                }
-                            }
-                            .padding(.horizontal, 13)
-                            .frame(height: 56)
-                            .background(Palette.panel)
-                        }
-                    }.padding(12)
-                }
-            }
-        }.frame(maxWidth: .infinity, maxHeight: .infinity)
-    }
-
     private func paneHeading(_ title: String) -> some View {
         Text(title)
             .font(.system(size: 12, weight: .semibold))
@@ -1239,9 +1191,6 @@ struct RepositoryView<ProjectTabs: View>: View {
                 workspace.activate(.stash)
                 sheet = .stash
             },
-            GitAction(title: "Worktrees", detail: "Открыть рабочие копии", icon: "square.on.square") {
-                workspace.activate(.worktrees)
-            },
             GitAction(title: "Keyboard Shortcuts", detail: "Справка по горячим клавишам", icon: "keyboard") { sheet = .keymap },
         ]
     }
@@ -1310,21 +1259,30 @@ struct RepositoryView<ProjectTabs: View>: View {
 
     private func logActions(_ entry: HistoryEntry) -> [HistoryAction] {
         guard let branch = workspace.status?.branch, workspace.operation == nil,
-              workspace.activity == nil, !entry.isMerge else { return [] }
-        return [
-            HistoryAction(title: "Cherry-pick…", systemImage: "plus.circle") {
-                confirmation = Confirmation(title: "Перенести коммит в «\(branch)»?",
-                    message: entry.subject, button: "Cherry-pick") {
-                    workspace.applyCommit(entry.id, operation: .cherryPick, into: branch)
-                }
-            },
-            HistoryAction(title: "Revert Commit…", systemImage: "arrow.uturn.backward") {
-                confirmation = Confirmation(title: "Отменить изменения этого коммита в «\(branch)»?",
-                    message: "Git создаст новый коммит с обратными изменениями.\n\(entry.subject)", button: "Revert Commit") {
-                    workspace.applyCommit(entry.id, operation: .revert, into: branch)
-                }
-            },
-        ]
+              workspace.activity == nil else { return [] }
+        var actions: [HistoryAction] = []
+        if !entry.isMerge {
+            actions += [
+                HistoryAction(title: "Cherry-pick…", systemImage: "plus.circle") {
+                    confirmation = Confirmation(title: "Перенести коммит в «\(branch)»?",
+                        message: entry.subject, button: "Cherry-pick") {
+                        workspace.applyCommit(entry.id, operation: .cherryPick, into: branch)
+                    }
+                },
+                HistoryAction(title: "Revert Commit…", systemImage: "arrow.uturn.backward") {
+                    confirmation = Confirmation(title: "Отменить изменения этого коммита в «\(branch)»?",
+                        message: "Git создаст новый коммит с обратными изменениями.\n\(entry.subject)", button: "Revert Commit") {
+                        workspace.applyCommit(entry.id, operation: .revert, into: branch)
+                    }
+                },
+            ]
+        }
+        if let head = workspace.status?.head, head != entry.id {
+            actions.append(HistoryAction(title: "Reset Current Branch to Here…", systemImage: "arrow.counterclockwise") {
+                sheet = .reset(entry, branch: branch, head: head)
+            })
+        }
+        return actions
     }
 
     private func handle(_ command: RepositoryCommand) {
@@ -1332,7 +1290,7 @@ struct RepositoryView<ProjectTabs: View>: View {
         case .commit:
             handledDiffFocus = diffFocusRequest
             workspace.projectFiles?.visible = false
-            if workspace.mode == .stash || workspace.mode == .worktrees || workspace.comparedRef != nil {
+            if workspace.mode == .stash || workspace.comparedRef != nil {
                 workspace.activate(.changes)
             }
             workspace.commitToolVisible = true
@@ -1341,7 +1299,7 @@ struct RepositoryView<ProjectTabs: View>: View {
             if projectVisible {
                 workspace.projectFiles?.visible = false
                 workspace.commitToolVisible = true
-            } else if workspace.mode == .stash || workspace.mode == .worktrees || workspace.comparedRef != nil {
+            } else if workspace.mode == .stash || workspace.comparedRef != nil {
                 workspace.activate(.changes)
                 workspace.commitToolVisible = true
             } else {
@@ -1373,7 +1331,7 @@ struct RepositoryView<ProjectTabs: View>: View {
             if projectVisible {
                 workspace.projectFiles?.visible = false
             } else if let root = workspace.git?.root {
-                if workspace.mode == .stash || workspace.mode == .worktrees || workspace.comparedRef != nil {
+                if workspace.mode == .stash || workspace.comparedRef != nil {
                     workspace.activate(.changes)
                 }
                 if workspace.projectFiles == nil { workspace.projectFiles = ProjectFilesModel(root: root) }
@@ -1493,8 +1451,8 @@ struct RepositoryView<ProjectTabs: View>: View {
 
     private func preparePush() {
         guard let git = workspace.git, let status = workspace.status, let branch = status.branch,
-              workspace.activity == nil, !status.isUnborn, !loadingRemotes else { return }
-        let destination = PushDestination(branch: branch, upstream: status.upstream, ahead: status.ahead)
+              workspace.activity == nil, let head = status.head, !loadingRemotes else { return }
+        let destination = PushDestination(branch: branch, upstream: status.upstream, head: head)
         if destination.upstream != nil {
             sheet = .push(destination, [])
             return

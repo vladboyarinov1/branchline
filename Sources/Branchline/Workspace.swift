@@ -6,14 +6,12 @@ enum WorkspaceMode: String, CaseIterable {
     case changes = "Изменения"
     case history = "История"
     case stash = "Stash"
-    case worktrees = "Worktrees"
 
     var icon: String {
         switch self {
         case .changes: "doc.badge.ellipsis"
         case .history: "clock.arrow.circlepath"
         case .stash: "archivebox"
-        case .worktrees: "square.on.square"
         }
     }
 }
@@ -124,7 +122,6 @@ final class Workspace {
     private(set) var comparedRef: GitRef?
     private(set) var comparedFiles: [GitFile] = []
     private(set) var stashes: [GitStash] = []
-    private(set) var worktrees: [GitWorktree] = []
     private(set) var selectedStash: GitStash?
     private(set) var focus: FileFocus?
     private(set) var diffSource: DiffSource?
@@ -134,6 +131,8 @@ final class Workspace {
     private(set) var notice: GitNotice?
     private(set) var feedback: String?
     private(set) var activity: String?
+    private(set) var fetchState: FetchState?
+    enum FetchState { case running, cancelling }
     private(set) var isUpdatingIndex = false
     private(set) var hasWorkingStatus = false
     private(set) var isHistoryLoading = false
@@ -163,6 +162,7 @@ final class Workspace {
     @ObservationIgnored private var gitDirectory: URL?
     @ObservationIgnored private var commonGitDirectory: URL?
     @ObservationIgnored private var draftKey: String?
+    @ObservationIgnored private var fetchTask: Task<Void, Error>?
     @ObservationIgnored private var extrasTask: Task<Void, Never>?
     @ObservationIgnored private var restoreHistoryCount = 0
     @ObservationIgnored private var historyOffset = 0
@@ -293,7 +293,7 @@ final class Workspace {
     }
 
     var needsPreviewPreparation: Bool {
-        guard !isFront, activity == nil, mode != .worktrees else { return false }
+        guard !isFront, activity == nil else { return false }
         if let project = activeProjectFiles, let path = project.previewPath {
             return !project.previewCache.contains(path)
         }
@@ -357,7 +357,6 @@ final class Workspace {
         status?.files = []
         detail = nil
         stashes = []
-        worktrees = []
         diffSource = nil
         patchError = nil
         projectFiles?.suspend()
@@ -401,7 +400,7 @@ final class Workspace {
         case .history:
             historyToolVisible = true
             queueHistory()
-        case .stash, .worktrees: refreshExtras()
+        case .stash: refreshStashes()
         }
     }
 
@@ -546,7 +545,7 @@ final class Workspace {
                 (sawHead || sawRefs || (entries.isEmpty && historyTask == nil) || userInitiated) {
                 queueHistory(replacing: isHistoryReplacing)
             }
-            if mode == .stash || mode == .worktrees { refreshExtras() }
+            if mode == .stash { refreshStashes() }
         }
     }
 
@@ -1116,17 +1115,42 @@ final class Workspace {
         return status.branch != nil && status.upstream != nil && status.behind > 0 && operation == nil
     }
 
-    func fetch() { perform("Получаем коммиты", success: "Fetch завершён") { try await $0.fetch() } }
+    func fetch() {
+        guard let git, activity == nil else { return }
+        let task = Task { try await git.fetch() }
+        fetchTask = task
+        fetchState = .running
+        perform("Получаем коммиты", success: "Fetch завершён", cancellationFeedback: "Fetch отменён") { _ in
+            defer {
+                self.fetchTask = nil
+                self.fetchState = nil
+            }
+            try await task.value
+        }
+    }
+
+    func cancelFetch() {
+        guard fetchState == .running else { return }
+        fetchState = .cancelling
+        fetchTask?.cancel()
+    }
     func updateFromUpstream() {
         guard let branch = status?.branch, canUpdateFromUpstream else { return }
         perform("Обновляем ветку", success: "Ветка обновлена", conflictOperation: .merge) {
             try await $0.updateFromUpstream(expectedBranch: branch)
         }
     }
-    func push(to remote: String?, branch: String, upstream: String?) {
-        perform("Отправляем коммиты", success: "Push завершён") { git in
-            if let remote { try await git.push(setUpstreamTo: remote, expectedBranch: branch) }
-            else { try await git.push(expectedBranch: branch, expectedUpstream: upstream) }
+    func push(_ preview: GitPushPreview) {
+        perform("Отправляем коммиты", success: "Push завершён") { try await $0.push(preview) }
+    }
+
+    func reset(to hash: String, mode: GitResetMode, branch: String, head: String) {
+        guard operation == nil else { return }
+        perform("Сбрасываем ветку", success: "Ветка сброшена") { [projectFiles] git in
+            if let failed = await projectFiles?.flushEditors() {
+                throw GitError.command("Сохраните изменения в «\(failed.path)» и повторите сброс.")
+            }
+            try await git.reset(to: hash, mode: mode, expectedBranch: branch, expectedHead: head)
         }
     }
 
@@ -1153,45 +1177,37 @@ final class Workspace {
         }
     }
 
-    private func refreshExtras() {
-        guard let git else { return }
-        let requestedMode = mode
+    private func refreshStashes() {
+        guard let git, mode == .stash else { return }
         extrasTask?.cancel()
         isExtrasLoading = true
         extrasTask = Task {
             defer { if !Task.isCancelled { isExtrasLoading = false } }
             do {
-                if requestedMode == .stash {
-                    let result = try await git.stashes()
-                    try Task.checkCancellation()
-                    guard isFront, self.git?.root == git.root, mode == requestedMode else { return }
-                    stashes = result
-                    if let preferred = result.first(where: { $0.hash == selectedStash?.hash }) ?? result.first {
-                        if detail?.commit.hash != preferred.hash || patch == nil { selectStash(preferred) }
-                        else { selectedStash = preferred }
-                    } else {
-                        cancelDetailRead()
-                        selectedStash = nil
-                        detail = nil
-                        detailError = nil
-                        clearPreview()
-                    }
-                } else if requestedMode == .worktrees {
-                    let result = try await git.worktrees()
-                    try Task.checkCancellation()
-                    guard isFront, self.git?.root == git.root, mode == requestedMode else { return }
-                    worktrees = result
+                let result = try await git.stashes()
+                try Task.checkCancellation()
+                guard isFront, self.git?.root == git.root, mode == .stash else { return }
+                stashes = result
+                if let preferred = result.first(where: { $0.hash == selectedStash?.hash }) ?? result.first {
+                    if detail?.commit.hash != preferred.hash || patch == nil { selectStash(preferred) }
+                    else { selectedStash = preferred }
+                } else {
+                    cancelDetailRead()
+                    selectedStash = nil
+                    detail = nil
+                    detailError = nil
+                    clearPreview()
                 }
             } catch is CancellationError {
             } catch {
-                if isFront, !Task.isCancelled, self.git?.root == git.root, mode == requestedMode { detailError = error.localizedDescription }
+                if isFront, !Task.isCancelled, self.git?.root == git.root, mode == .stash { detailError = error.localizedDescription }
             }
         }
     }
 
     private func perform(_ label: String, success: String?, changes: RepositoryChanges = .everything,
                          updatingIndex: Bool = false, conflictOperation: GitOperation? = nil,
-                         action: @escaping (Git) async throws -> Void) {
+                         cancellationFeedback: String? = nil, action: @escaping (Git) async throws -> Void) {
         guard let git, activity == nil else { return }
         isUpdatingIndex = updatingIndex
         activity = label
@@ -1214,6 +1230,8 @@ final class Workspace {
             do {
                 try await action(git)
                 if let success { feedback = success }
+            } catch is CancellationError where cancellationFeedback != nil {
+                feedback = cancellationFeedback
             } catch {
                 if let conflictOperation, gitDirectory.flatMap({ GitOperation.detect(in: $0) }) == conflictOperation {
                     updateOperation()
