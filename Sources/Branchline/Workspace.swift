@@ -580,7 +580,7 @@ final class Workspace {
                 let refsByCommit = Dictionary(grouping: refs, by: \.hash)
                 let page = commits.prefix(take).map { commit in
                     HistoryEntry(id: commit.hash, parents: query.isEmpty && author.isEmpty && filePath == nil ? commit.parents : [],
-                                 subject: commit.subject, author: commit.author, date: commit.date,
+                                 subject: commit.subject, author: commit.author, email: commit.email, date: commit.date,
                                  refs: refsByCommit[commit.hash, default: []].map { ref in
                                      if ref.isCurrent { return "HEAD -> " + ref.name }
                                      if ref.kind == .tag { return "tag: " + ref.name }

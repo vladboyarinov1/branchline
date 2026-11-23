@@ -711,11 +711,10 @@ struct RepositoryView<ProjectTabs: View>: View {
         let count = eligible.count(where: workspace.isIncluded)
         let all = count > 0 && count == eligible.count
         let title = "\(inclusionAction(all)) · \(label)"
-        return InclusionGroupCheckbox(state: all ? .on : (count == 0 ? .off : .mixed),
-                                      label: title, enabled: !eligible.isEmpty && workspace.activity == nil) {
+        return FileCheckbox(state: all ? .on : (count == 0 ? .off : .mixed),
+                            label: title, enabled: !eligible.isEmpty && workspace.activity == nil) {
             workspace.setIncluded(eligible, included: $0)
         }
-        .frame(width: 22, height: 24)
     }
 
     private func inclusionAction(_ included: Bool) -> String {
@@ -724,17 +723,10 @@ struct RepositoryView<ProjectTabs: View>: View {
 
     private func indexCheckbox(_ files: [GitFile], indexed: Bool, label: String) -> some View {
         let action = indexed ? "Убрать из индекса" : "Добавить в индекс"
-        return Toggle("\(action) · \(label)", isOn: Binding(
-            get: { indexed },
-            set: { value in
-                if value != indexed && workspace.activity == nil { workspace.stage(files, undo: !value) }
-            }
-        ))
-        .toggleStyle(.checkbox)
-        .labelsHidden()
-        .controlSize(.small)
-        .frame(width: 22, height: 24)
-        .disabled(workspace.activity != nil && !workspace.isUpdatingIndex)
+        return FileCheckbox(state: indexed ? .on : .off, label: "\(action) · \(label)",
+                            enabled: workspace.activity == nil || workspace.isUpdatingIndex) { value in
+            if value != indexed && workspace.activity == nil { workspace.stage(files, undo: !value) }
+        }
         .allowsHitTesting(!workspace.isUpdatingIndex)
     }
 
@@ -750,14 +742,10 @@ struct RepositoryView<ProjectTabs: View>: View {
         return HStack(spacing: 1) {
             if let included {
                 let title = "\(inclusionAction(included)) · \(file.name)"
-                Toggle(title, isOn: Binding(
-                    get: { workspace.isIncluded(file) }, set: { workspace.setIncluded([file], included: $0) }
-                ))
-                .toggleStyle(.checkbox)
-                .labelsHidden()
-                .controlSize(.small)
-                .frame(width: 22, height: 24)
-                .disabled(file.unstaged == .conflicted || workspace.activity != nil)
+                FileCheckbox(state: included ? .on : .off, label: title,
+                             enabled: file.unstaged != .conflicted && workspace.activity == nil) {
+                    workspace.setIncluded([file], included: $0)
+                }
                 .padding(.leading, 19)
             } else if let indexed {
                 indexCheckbox([file], indexed: indexed, label: file.name)
@@ -949,13 +937,7 @@ struct RepositoryView<ProjectTabs: View>: View {
                     .font(.system(size: 11)).foregroundStyle(Palette.muted)
             }
             HStack(spacing: 6) {
-                Text(detail.commit.author)
-                    .font(.system(size: 11)).lineLimit(1).help(detail.email)
-                    .contextMenu {
-                        if !detail.email.isEmpty {
-                            Button("Скопировать email") { workspace.copy(detail.email) }
-                        }
-                    }
+                Text(detail.commit.author).font(.system(size: 11))
                 Text(detail.commit.date.formatted(date: .abbreviated, time: .omitted))
                     .font(.system(size: 10)).lineLimit(1)
                     .help(detail.commit.date.formatted(date: .long, time: .shortened))
@@ -968,6 +950,15 @@ struct RepositoryView<ProjectTabs: View>: View {
                     .accessibilityLabel("Скопировать SHA \(detail.commit.shortHash)")
             }
             .foregroundStyle(Palette.muted)
+            if !detail.email.isEmpty {
+                Text(detail.email)
+                    .font(.system(size: 11))
+                    .foregroundStyle(Palette.muted)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .contextMenu {
+                        Button("Скопировать email") { workspace.copy(detail.email) }
+                    }
+            }
         }
         .textSelection(.enabled)
         .padding(WorkbenchLayout.panelInset)
@@ -1503,7 +1494,19 @@ struct RepositoryView<ProjectTabs: View>: View {
     }
 }
 
-private struct InclusionGroupCheckbox: NSViewRepresentable {
+private struct FileCheckbox: View {
+    let state: NSControl.StateValue
+    let label: String
+    let enabled: Bool
+    let onToggle: (Bool) -> Void
+
+    var body: some View {
+        NativeFileCheckbox(state: state, label: label, enabled: enabled, onToggle: onToggle)
+            .frame(width: 22, height: 24)
+    }
+}
+
+private struct NativeFileCheckbox: NSViewRepresentable {
     let state: NSControl.StateValue
     let label: String
     let enabled: Bool
@@ -1513,7 +1516,7 @@ private struct InclusionGroupCheckbox: NSViewRepresentable {
 
     func makeNSView(context: Context) -> NSButton {
         let button = NSButton(checkboxWithTitle: "", target: context.coordinator, action: #selector(Coordinator.toggle(_:)))
-        button.controlSize = .small
+        button.controlSize = .mini
         button.allowsMixedState = true
         return button
     }

@@ -6,6 +6,7 @@ struct HistoryEntry: Identifiable, Equatable, Sendable {
     let parents: [String]
     let subject: String
     let author: String
+    let email: String
     let date: Date
     let refs: [String]
     var isMerge = false
@@ -384,16 +385,15 @@ private struct HistoryColumns: Equatable {
     let width: CGFloat
     let showsGraph: Bool
 
-    var graph: CGFloat { showsGraph ? min(90, max(72, width * 0.2)) : 0 }
-    var author: CGFloat { width >= max(390, graph + 345) ? min(120, width * 0.19) : 0 }
-    var date: CGFloat { 91 }
-    var refCount: Int { width >= 525 ? 2 : 1 }
-    var refWidth: CGFloat {
-        let rails = Self.inset * 2 + date + Self.spacing
-            + (graph > 0 ? graph + Self.spacing : 0)
-            + (author > 0 ? author + Self.spacing : 0)
-        return min(150, max(0, width - rails) * 0.42)
+    var graphLanes = 1
+    var author: CGFloat = 140
+
+    var graph: CGFloat { showsGraph ? CGFloat(max(0, graphLanes - 1)) * 8 + 16 : 0 }
+    var layoutWidth: CGFloat {
+        max(width, graph + (graph > 0 ? Self.spacing : 0) + Self.inset * 2 + Self.spacing * 2 + 150 + author + date)
     }
+    var date: CGFloat { 91 }
+    var refCount: Int { layoutWidth >= 525 ? 2 : 1 }
 }
 
 private enum HistoryColors {
@@ -427,13 +427,14 @@ private struct HistoryRow: View, Equatable {
                     .accessibilityHidden(true)
             }
             message
-            if columns.author > 0 {
-                Text(entry.author)
-                    .font(.system(size: 11))
-                    .foregroundStyle(Palette.muted)
-                    .lineLimit(1)
-                    .frame(width: columns.author, alignment: .leading)
+            VStack(alignment: .leading, spacing: 0) {
+                Text(entry.author).font(.system(size: 11)).lineLimit(1)
+                if !entry.email.isEmpty {
+                    Text(entry.email).font(.system(size: 9.5)).lineLimit(1).truncationMode(.middle)
+                }
             }
+            .foregroundStyle(Palette.muted)
+            .frame(width: columns.author, alignment: .leading)
             Text(dateText)
                 .font(.system(size: 10.5).monospacedDigit())
                 .foregroundStyle(Palette.muted)
@@ -461,14 +462,18 @@ private struct HistoryRow: View, Equatable {
     }
 
     var toolTip: String {
-        ([subject, "\(entry.author) · \(entry.date.formatted(Self.timestamp))", entry.id] + entry.refs)
+        ([subject, authorIdentity, entry.date.formatted(Self.timestamp), entry.id] + entry.refs)
             .joined(separator: "\n")
     }
 
     var accessibilitySummary: String {
-        var parts = [subject, entry.author, entry.date.formatted(Self.timestamp), "Хеш \(entry.id)"]
+        var parts = [subject, authorIdentity, entry.date.formatted(Self.timestamp), "Хеш \(entry.id)"]
         parts.append(contentsOf: entry.refs)
         return parts.joined(separator: ", ")
+    }
+
+    private var authorIdentity: String {
+        entry.email.isEmpty ? entry.author : "\(entry.author) <\(entry.email)>"
     }
 
     private var message: some View {
@@ -477,6 +482,7 @@ private struct HistoryRow: View, Equatable {
                 .font(.system(size: 12, weight: selected ? .semibold : .regular))
                 .foregroundStyle(Palette.text)
                 .lineLimit(1)
+                .layoutPriority(1)
 
             if !entry.refs.isEmpty {
                 HStack(spacing: 3) {
@@ -490,8 +496,6 @@ private struct HistoryRow: View, Equatable {
                             .fixedSize()
                     }
                 }
-                .frame(maxWidth: columns.refWidth, alignment: .leading)
-                .layoutPriority(1)
             }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
@@ -523,41 +527,48 @@ private struct HistoryRow: View, Equatable {
 
 /// Each active lane points to a parent waiting to appear in topological order.
 struct HistoryGraph {
-    static let visibleLanes = 7
     static let colorCount: UInt8 = 6
 
     struct Row: Equatable {
-        let column: UInt8
+        let column: Int
         let color: UInt8
         let hasIncoming: Bool
+        private struct Edge: Equatable {
+            let lane: Int
+            let color: UInt8
+        }
 
-        // Seven through lanes need three bits each (zero means empty). An outgoing
-        // edge needs six bits for its destination lane, color and zero terminator.
-        private var through: UInt32 = 0
+        // Usual histories stay inline. Allocate overflow only for unusually wide graphs.
+        private var through: UInt64 = 0
         private var outgoing: UInt64 = 0
-        private var extraOutgoing: [UInt8] = []
+        private var extraThrough: [Edge] = []
+        private var extraOutgoing: [Edge] = []
+        private var outgoingCount = 0
 
         init(column: Int, color: UInt8, hasIncoming: Bool) {
-            self.column = UInt8(min(column, HistoryGraph.visibleLanes))
+            self.column = column
             self.color = color
             self.hasIncoming = hasIncoming
         }
 
-        var hasMultipleOutgoing: Bool { outgoing >> 6 != 0 }
+        var hasMultipleOutgoing: Bool { outgoingCount > 1 }
 
         mutating func addThrough(_ column: Int, color: UInt8) {
-            through |= UInt32(color + 1) << (column * 3)
+            if column < 21 {
+                through |= UInt64(color + 1) << (column * 3)
+            } else {
+                extraThrough.append(Edge(lane: column, color: color))
+            }
         }
 
-        mutating func addOutgoing(to column: Int, color: UInt8, index: Int) {
-            let lane = UInt8(min(column, HistoryGraph.visibleLanes))
-            let edge = (lane << 3 | color) + 1
-            if index < 10 {
-                outgoing |= UInt64(edge) << (index * 6)
+        mutating func addOutgoing(to column: Int, color: UInt8) {
+            if outgoingCount < 8, column < 32 {
+                let edge = (UInt8(column) << 3 | color) + 1
+                outgoing |= UInt64(edge) << (outgoingCount * 8)
             } else {
-                // Octopus merges can have more than ten drawn edges.
-                extraOutgoing.append(edge)
+                extraOutgoing.append(Edge(lane: column, color: color))
             }
+            outgoingCount += 1
         }
 
         func forEachThrough(_ draw: (Int, UInt8) -> Void) {
@@ -569,24 +580,25 @@ struct HistoryGraph {
                 bits >>= 3
                 lane += 1
             }
+            for edge in extraThrough { draw(edge.lane, edge.color) }
         }
 
         func forEachOutgoing(_ draw: (Int, UInt8) -> Void) {
-            func drawEdge(_ encoded: UInt8) {
-                let edge = encoded - 1
-                draw(Int(edge >> 3), edge & 0b111)
-            }
-
             var bits = outgoing
             while bits != 0 {
-                drawEdge(UInt8(bits & 0b111111))
-                bits >>= 6
+                let encoded = UInt8(truncatingIfNeeded: bits)
+                if encoded != 0 {
+                    let edge = encoded - 1
+                    draw(Int(edge >> 3), edge & 0b111)
+                }
+                bits >>= 8
             }
-            for edge in extraOutgoing { drawEdge(edge) }
+            for edge in extraOutgoing { draw(edge.lane, edge.color) }
         }
     }
 
     private(set) var rows: [String: Row] = [:]
+    private(set) var laneCount = 1
     private var lanes: [UInt8?] = []
     private var positions: [String: Int] = [:]
     private var nextColor: UInt8 = 0
@@ -609,12 +621,11 @@ struct HistoryGraph {
             }
             lanes[column] = nil
             var row = Row(column: column, color: nodeColor, hasIncoming: incoming != nil)
-            for (index, lane) in lanes.prefix(Self.visibleLanes).enumerated() {
+            for (index, lane) in lanes.enumerated() {
                 if let color = lane {
                     row.addThrough(index, color: color)
                 }
             }
-            var outgoingCount = 0
 
             for (parentIndex, parent) in entry.parents.enumerated() {
                 let target: Int
@@ -638,12 +649,10 @@ struct HistoryGraph {
                     }
                     positions[parent] = target
                 }
-                if column < Self.visibleLanes || target < Self.visibleLanes {
-                    row.addOutgoing(to: target, color: targetColor, index: outgoingCount)
-                    outgoingCount += 1
-                }
+                row.addOutgoing(to: target, color: targetColor)
             }
 
+            laneCount = max(laneCount, lanes.count)
             rows[entry.id] = row
             while let last = lanes.last, last == nil {
                 lanes.removeLast()
@@ -667,13 +676,7 @@ private struct HistoryGraphCell: View {
             guard let row else { return }
             let middle = size.height / 2
             let laneOpacity = 0.84
-            let laneSpacing = min(10, (size.width - 16) / CGFloat(HistoryGraph.visibleLanes))
-            func x(_ column: Int) -> CGFloat {
-                if column >= HistoryGraph.visibleLanes {
-                    return CGFloat(HistoryGraph.visibleLanes) * laneSpacing + 5
-                }
-                return CGFloat(column) * laneSpacing + 6
-            }
+            func x(_ column: Int) -> CGFloat { CGFloat(column) * 8 + 8 }
 
             row.forEachThrough { lane, lineColor in
                 let laneX = x(lane)
@@ -684,7 +687,7 @@ private struct HistoryGraphCell: View {
                 context.stroke(path, with: .color(color(lineColor).opacity(laneOpacity)), lineWidth: 1.3)
             }
             let node = CGPoint(x: x(Int(row.column)), y: middle)
-            if row.hasIncoming && row.column < HistoryGraph.visibleLanes {
+            if row.hasIncoming {
                 let path = Path { path in
                     path.move(to: CGPoint(x: node.x, y: 0))
                     path.addLine(to: node)
@@ -702,13 +705,6 @@ private struct HistoryGraphCell: View {
                     )
                 }
                 context.stroke(path, with: .color(color(lineColor).opacity(laneOpacity)), lineWidth: 1.3)
-            }
-            if row.column >= HistoryGraph.visibleLanes {
-                for dot in 0..<3 {
-                    let mark = CGRect(x: node.x, y: middle - 5 + CGFloat(dot) * 4, width: 2, height: 2)
-                    context.fill(Path(ellipseIn: mark), with: .color(Palette.muted))
-                }
-                return
             }
             let diameter: CGFloat = row.hasMultipleOutgoing ? 7.5 : 6
             let dot = CGRect(
@@ -729,7 +725,7 @@ private struct HistoryGraphCell: View {
 
 private struct ReusableHistoryTable: NSViewRepresentable {
     let entries: [HistoryEntry]
-    let columns: HistoryColumns
+    var columns: HistoryColumns
     @Binding var selection: String?
     let showDiff: ((HistoryEntry) -> Void)?
     let commitActions: ((HistoryEntry) -> [HistoryAction])?
@@ -749,11 +745,12 @@ private struct ReusableHistoryTable: NSViewRepresentable {
         table.selectionHighlightStyle = .none
         table.allowsMultipleSelection = false
         table.allowsEmptySelection = true
-        table.autoresizingMask = [.width]
+        table.columnAutoresizingStyle = .noColumnAutoresizing
         table.setAccessibilityLabel("История коммитов")
         let column = NSTableColumn(identifier: Coordinator.cellID)
         column.minWidth = 20
-        column.resizingMask = [.autoresizingMask]
+        column.maxWidth = CGFloat.greatestFiniteMagnitude
+        column.resizingMask = []
         table.addTableColumn(column)
 
         let coordinator = context.coordinator
@@ -771,6 +768,7 @@ private struct ReusableHistoryTable: NSViewRepresentable {
         scroll.drawsBackground = false
         scroll.borderType = .noBorder
         scroll.hasVerticalScroller = true
+        scroll.hasHorizontalScroller = true
         scroll.autohidesScrollers = true
         scroll.documentView = table
         let clip = scroll.contentView
@@ -798,6 +796,7 @@ private struct ReusableHistoryTable: NSViewRepresentable {
         private var updating = false
         private var initialized = false
         private var prefetchScheduled = false
+        private var authorWidth: CGFloat = 140
 
         init(_ source: ReusableHistoryTable) { self.source = source }
 
@@ -839,6 +838,17 @@ private struct ReusableHistoryTable: NSViewRepresentable {
             } else if orderChanged || self.source.scope.filtered {
                 graph = HistoryGraph(entries: source.entries)
             }
+            if !initialized || oldEntries != source.entries {
+                if !appended { authorWidth = 140 }
+                let entries = appended ? source.entries.dropFirst(oldEntries.count) : source.entries[...]
+                let nameFont = NSFont.systemFont(ofSize: 11)
+                let emailFont = NSFont.systemFont(ofSize: 9.5)
+                for entry in entries {
+                    let name = (entry.author as NSString).size(withAttributes: [.font: nameFont]).width
+                    let email = (entry.email as NSString).size(withAttributes: [.font: emailFont]).width
+                    authorWidth = max(authorWidth, min(270, ceil(max(name, email)) + 8))
+                }
+            }
             updating = true
             defer { updating = false }
             if scopeChanged, let scroll = table.enclosingScrollView {
@@ -847,6 +857,13 @@ private struct ReusableHistoryTable: NSViewRepresentable {
                 scroll.reflectScrolledClipView(scroll.contentView)
             }
             self.source = source
+            self.source.columns.graphLanes = graph.laneCount
+            self.source.columns.author = authorWidth
+            let width = ceil(self.source.columns.layoutWidth)
+            if let column = table.tableColumns.first, column.width != width || table.frame.width != width {
+                column.width = width
+                table.setFrameSize(NSSize(width: width, height: table.frame.height))
+            }
             let next = source.selection.flatMap { id in source.entries.firstIndex { $0.id == id } } ?? -1
             let interactive = !source.isReplacing
             if table.isEnabled != interactive { table.isEnabled = interactive }

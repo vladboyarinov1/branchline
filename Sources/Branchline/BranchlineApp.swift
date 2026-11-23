@@ -110,7 +110,7 @@ private struct MainWindow: View {
     @Environment(\.scenePhase) private var scenePhase
     @State private var booted = false
     @State private var tabFrames: [URL: CGRect] = [:]
-    @GestureState private var tabDrag: (source: URL, location: CGPoint)?
+    @State private var tabDropTarget: URL?
     private let tabCoordinateSpace = "project-tabs"
 
     var body: some View {
@@ -219,6 +219,20 @@ private struct MainWindow: View {
             .buttonStyle(.plain)
             .help(tab.root.path)
             .accessibilityAddTraits(selected ? .isSelected : [])
+            .overlay {
+                ProjectTabPointer(
+                    click: { desk.select(tab.id) },
+                    move: { point in
+                        let target = tabTarget(from: tab.id, at: point)
+                        if tabDropTarget != target { tabDropTarget = target }
+                    },
+                    drop: { point in
+                        tabDropTarget = nil
+                        if let target = tabTarget(from: tab.id, at: point) { desk.move(tab.id, to: target) }
+                    },
+                    cancel: { tabDropTarget = nil }
+                )
+            }
             let indexing = tab.loaded?.isUpdatingIndex == true
             DeferredVisibility(isPending: !selected && !indexing && tab.loaded?.activity != nil) { showProgress in
                 Button { desk.close(tab.id) } label: {
@@ -247,19 +261,10 @@ private struct MainWindow: View {
             }
         }
         .overlay {
-            if let tabDrag, tabDrag.source != tab.id, tabFrames[tab.id]?.contains(tabDrag.location) == true {
+            if tabDropTarget == tab.id {
                 RoundedRectangle(cornerRadius: 5).strokeBorder(Palette.accentBorder).allowsHitTesting(false)
             }
         }
-        .simultaneousGesture(
-            DragGesture(minimumDistance: 6, coordinateSpace: .named(tabCoordinateSpace))
-                .updating($tabDrag) { value, state, _ in state = (tab.id, value.location) }
-                .onEnded { value in
-                    if let target = desk.tabs.first(where: { tabFrames[$0.id]?.contains(value.location) == true }) {
-                        desk.move(tab.id, to: target.id)
-                    }
-                }
-        )
         .contextMenu {
             if let index = desk.tabs.firstIndex(where: { $0.id == tab.id }) {
                 if index > 0 {
@@ -273,6 +278,12 @@ private struct MainWindow: View {
             Button("Закрыть вкладку") { desk.close(tab.id) }
                 .disabled(tab.loaded?.activity != nil)
         }
+    }
+
+    private func tabTarget(from source: URL, at point: CGPoint) -> URL? {
+        guard let origin = tabFrames[source]?.origin else { return nil }
+        let location = CGPoint(x: origin.x + point.x, y: origin.y + point.y)
+        return desk.tabs.first(where: { $0.id != source && tabFrames[$0.id]?.contains(location) == true })?.id
     }
 
     private var welcome: some View {
@@ -306,8 +317,75 @@ struct WindowDragSpace: NSViewRepresentable {
     func updateNSView(_ nsView: NSView, context: Context) {}
 
     private final class DragView: NSView {
+        override func viewDidMoveToWindow() {
+            super.viewDidMoveToWindow()
+            window?.isMovableByWindowBackground = false
+        }
+
+        override var mouseDownCanMoveWindow: Bool { false }
+
         override func mouseDown(with event: NSEvent) {
             window?.performDrag(with: event)
+        }
+    }
+}
+
+private struct ProjectTabPointer: NSViewRepresentable {
+    let click: () -> Void
+    let move: (CGPoint) -> Void
+    let drop: (CGPoint) -> Void
+    let cancel: () -> Void
+
+    func makeNSView(context: Context) -> Pointer { Pointer() }
+
+    func updateNSView(_ view: Pointer, context: Context) {
+        view.click = click
+        view.move = move
+        view.drop = drop
+        view.cancel = cancel
+    }
+
+    final class Pointer: NSView {
+        var click: (() -> Void)?
+        var move: ((CGPoint) -> Void)?
+        var drop: ((CGPoint) -> Void)?
+        var cancel: (() -> Void)?
+        private var start: CGPoint?
+        private var dragging = false
+
+        override var isFlipped: Bool { true }
+        override var mouseDownCanMoveWindow: Bool { false }
+        override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
+
+        override func mouseDown(with event: NSEvent) {
+            start = event.locationInWindow
+            dragging = false
+        }
+
+        override func mouseDragged(with event: NSEvent) {
+            guard let start else { return }
+            let location = event.locationInWindow
+            if !dragging {
+                dragging = hypot(location.x - start.x, location.y - start.y) >= 5
+            }
+            if dragging { move?(convert(location, from: nil)) }
+        }
+
+        override func mouseUp(with event: NSEvent) {
+            guard start != nil else { return }
+            start = nil
+            let point = convert(event.locationInWindow, from: nil)
+            if dragging {
+                dragging = false
+                drop?(point)
+            } else if bounds.contains(point) {
+                click?()
+            }
+        }
+
+        override func viewWillMove(toWindow newWindow: NSWindow?) {
+            if newWindow == nil, dragging { cancel?() }
+            super.viewWillMove(toWindow: newWindow)
         }
     }
 }
