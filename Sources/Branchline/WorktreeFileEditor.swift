@@ -73,7 +73,7 @@ struct WorktreeFileEditor: View {
         Task {
             defer { saving = false }
             do {
-                try await Task.detached { try draft.save(text, root: root, path: path) }.value
+                _ = try await Task.detached { try draft.save(text, root: root, path: path) }.value
                 saved()
                 dismiss()
             } catch { self.error = error.localizedDescription }

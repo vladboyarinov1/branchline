@@ -391,16 +391,15 @@ struct DiffView: View {
 }
 
 struct ProjectFilePreview: View {
-    let root: URL
+    let model: ProjectFilesModel
     let path: String
     let revision: UInt
-    let onEdit: () -> Void
     @AppStorage(DiffView.syntaxHighlightingKey) private var highlightsSyntax = true
     @Environment(\.colorScheme) private var colorScheme
     @State private var loaded: Loaded?
+    @State private var discard: InlineFileBuffer?
 
     private struct Request: Equatable {
-        let root: URL
         let path: String
         let revision: UInt
     }
@@ -410,8 +409,9 @@ struct ProjectFilePreview: View {
         let content: Content
     }
 
-    private enum Content: Sendable {
-        case document(DiffDocument)
+    private enum Content {
+        case editor(InlineFileBuffer)
+        case readOnly(DiffDocument)
         case unsupported
         case failed(String)
     }
@@ -419,37 +419,36 @@ struct ProjectFilePreview: View {
     var body: some View {
         let colors = DiffColors(dark: colorScheme == .dark)
         let shownPath = loaded?.path ?? path
-        let request = Request(root: root, path: path, revision: revision)
+        let syntax = highlightsSyntax ? DiffSyntax(path: shownPath) : nil
+        let request = Request(path: path, revision: revision)
         VStack(spacing: 0) {
             CodeFileHeading(file: GitFile(path: shownPath), pending: loaded?.path != path,
                             loadingLabel: "Загрузка файла", colors: colors)
-                .overlay(alignment: .trailing) {
-                    if shownPath == path, case .document = loaded?.content {
-                        Button(action: onEdit) {
-                            Image(systemName: "pencil").frame(width: 26, height: 23)
-                        }
-                        .buttonStyle(.plain)
-                        .accessibilityLabel("Редактировать файл")
-                        .workbenchHint("Редактировать файл")
-                        .padding(.trailing, WorkbenchLayout.panelInset)
-                    }
-                }
             StudioRule()
             switch loaded?.content {
-            case .document(let document) where document.rowCount > 0:
-                ProjectFileTable(document: document, path: shownPath, colors: colors,
-                                 syntax: highlightsSyntax ? DiffSyntax(path: shownPath) : nil)
-                if document.isTruncated {
-                    Text("Предпросмотр сокращён.")
-                        .font(.system(size: 11))
-                        .foregroundStyle(Color(nsColor: colors.muted))
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                        .padding(.horizontal, WorkbenchLayout.panelInset)
-                        .padding(.vertical, 6)
-                        .background(Color(nsColor: colors.chrome))
+            case .editor(let editor):
+                InlineCodeEditor(buffer: editor, text: editor.text, colors: colors,
+                                 syntax: syntax, editable: path == shownPath)
+                    .id(ObjectIdentifier(editor))
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+                if let error = editor.error {
+                    HStack(spacing: 8) {
+                        Text(error).font(.system(size: 11)).foregroundStyle(Palette.red)
+                        Spacer()
+                        Button("Повторить", action: editor.saveNow)
+                        Button("Перечитать…") { discard = editor }
+                    }
+                    .padding(WorkbenchLayout.panelInset)
                 }
-            case .document:
-                EmptyPanel(icon: "doc", title: "Пустой файл")
+            case .readOnly(let document):
+                ProjectFileTable(document: document, path: shownPath, colors: colors, syntax: syntax)
+                Text("Предпросмотр больших файлов доступен для чтения.")
+                    .font(.system(size: 11))
+                    .foregroundStyle(Color(nsColor: colors.muted))
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(.horizontal, WorkbenchLayout.panelInset)
+                    .padding(.vertical, 6)
+                    .background(Color(nsColor: colors.chrome))
             case .unsupported:
                 EmptyPanel(icon: "doc", title: "Для этого файла нет текстового предпросмотра")
             case .failed(let reason):
@@ -462,32 +461,186 @@ struct ProjectFilePreview: View {
         .foregroundStyle(colorScheme == .dark ? Color(nsColor: colors.text) : .primary)
         .background(Color(nsColor: colors.canvas))
         .task(id: request) { await load(request) }
+        .confirmationDialog("Отбросить несохранённый текст и перечитать файл?", isPresented: Binding(
+            get: { discard != nil }, set: { if !$0 { discard = nil } }
+        ), titleVisibility: .visible, presenting: discard) { editor in
+            Button("Перечитать с диска", role: .destructive) { model.discardEditor(editor) }
+        }
     }
 
     private func load(_ request: Request) async {
-        guard !Task.isCancelled else { return }
+        if let editor = model.pendingEditor(at: request.path) {
+            loaded = Loaded(path: request.path, content: .editor(editor))
+            return
+        }
+        let root = model.root
         let read = Task.detached(priority: .userInitiated) {
-            switch try ProjectFileContent.read(root: request.root, path: request.path) {
-            case .text(let text, let truncated):
-                return Content.document(DiffDocument(source: text, truncated: truncated))
-            case .unsupported:
-                return Content.unsupported
+            let snapshot = try ProjectFileContent.load(root: root, path: request.path)
+            if let draft = snapshot.draft { return FileRead.editable(draft) }
+            if case .text(let text, let truncated) = snapshot.content {
+                return FileRead.readOnly(DiffDocument(source: text, truncated: truncated))
+            }
+            return FileRead.unsupported
+        }
+        let result = await withTaskCancellationHandler { await read.result } onCancel: { read.cancel() }
+        guard !Task.isCancelled else { return }
+        let content: Content
+        if let editor = model.pendingEditor(at: request.path) {
+            content = .editor(editor)
+        } else {
+            switch result {
+            case .success(.editable(let draft)):
+                if loaded?.path == request.path, case .editor(let editor) = loaded?.content,
+                   !editor.dirty, !editor.saving {
+                    editor.refreshIfClean(from: draft)
+                    return
+                }
+                content = .editor(model.editor(at: request.path, draft: draft))
+            case .success(.readOnly(let document)):
+                if loaded?.path == request.path, case .readOnly(let previous) = loaded?.content,
+                   document.matchesSource(previous) { return }
+                content = .readOnly(document)
+            case .success(.unsupported):
+                content = .unsupported
+            case .failure(let error):
+                content = .failed(error.localizedDescription)
             }
         }
-        let result = await withTaskCancellationHandler {
-            await read.result
-        } onCancel: {
-            read.cancel()
+        loaded = Loaded(path: request.path, content: content)
+    }
+
+    private enum FileRead: Sendable {
+        case editable(WorktreeFileDraft), readOnly(DiffDocument), unsupported
+    }
+}
+
+private struct InlineCodeEditor: NSViewRepresentable {
+    let buffer: InlineFileBuffer
+    let text: String
+    let colors: DiffColors
+    let syntax: DiffSyntax?
+    let editable: Bool
+
+    func makeCoordinator() -> Coordinator { Coordinator(buffer: buffer) }
+
+    func makeNSView(context: Context) -> NSScrollView {
+        let scroll = NSScrollView()
+        let text = CodeTextView(frame: .zero)
+        text.isRichText = false
+        text.importsGraphics = false
+        text.allowsUndo = true
+        text.isAutomaticQuoteSubstitutionEnabled = false
+        text.isAutomaticDashSubstitutionEnabled = false
+        text.isAutomaticTextReplacementEnabled = false
+        text.isAutomaticSpellingCorrectionEnabled = false
+        text.isContinuousSpellCheckingEnabled = false
+        text.isAutomaticLinkDetectionEnabled = false
+        text.isAutomaticDataDetectionEnabled = false
+        text.font = DiffCellView.font
+        text.string = self.text
+        text.textContainerInset = NSSize(width: 11, height: 8)
+        text.isVerticallyResizable = true
+        text.isHorizontallyResizable = true
+        text.autoresizingMask = [.width]
+        text.maxSize = NSSize(width: CGFloat.greatestFiniteMagnitude, height: CGFloat.greatestFiniteMagnitude)
+        text.textContainer?.widthTracksTextView = false
+        text.textContainer?.containerSize = text.maxSize
+        text.setAccessibilityLabel("Содержимое файла")
+        text.delegate = context.coordinator
+        text.save = { [weak buffer] in buffer?.saveNow() }
+        scroll.documentView = text
+        scroll.hasVerticalScroller = true
+        scroll.hasHorizontalScroller = true
+        scroll.autohidesScrollers = true
+        scroll.contentView.postsBoundsChangedNotifications = true
+        NotificationCenter.default.addObserver(context.coordinator, selector: #selector(Coordinator.viewportChanged),
+                                               name: NSView.boundsDidChangeNotification, object: scroll.contentView)
+        return scroll
+    }
+
+    func updateNSView(_ scroll: NSScrollView, context: Context) {
+        guard let text = scroll.documentView as? CodeTextView else { return }
+        let coordinator = context.coordinator
+        let styleChanged = coordinator.syntax != syntax || coordinator.colors != colors
+        let contentChanged = !text.string.utf8.elementsEqual(self.text.utf8)
+        text.isEditable = editable
+        if styleChanged || coordinator.colors == nil {
+            text.backgroundColor = colors.canvas
+            text.textColor = colors.text
+            text.insertionPointColor = colors.text
+            scroll.backgroundColor = colors.canvas
         }
-        guard !Task.isCancelled else { return }
-        switch result {
-        case .success(let content):
-            if loaded?.path == request.path,
-               case .document(let previous) = loaded?.content,
-               case .document(let current) = content, current.matchesSource(previous) { return }
-            loaded = Loaded(path: request.path, content: content)
-        case .failure(let error):
-            loaded = Loaded(path: request.path, content: .failed(error.localizedDescription))
+        if contentChanged {
+            let selection = text.selectedRange()
+            text.string = self.text
+            let length = (text.string as NSString).length
+            text.setSelectedRange(NSRange(location: min(selection.location, length), length: 0))
+            text.undoManager?.removeAllActions()
+        }
+        coordinator.syntax = syntax
+        coordinator.colors = colors
+        if styleChanged || contentChanged { coordinator.highlight(text, clear: styleChanged) }
+    }
+
+    static func dismantleNSView(_ scroll: NSScrollView, coordinator: Coordinator) {
+        NotificationCenter.default.removeObserver(coordinator, name: NSView.boundsDidChangeNotification,
+                                                 object: scroll.contentView)
+    }
+
+    @MainActor final class Coordinator: NSObject, NSTextViewDelegate {
+        private let buffer: InlineFileBuffer
+        var colors: DiffColors?
+        var syntax: DiffSyntax?
+
+        init(buffer: InlineFileBuffer) { self.buffer = buffer }
+
+        func textDidChange(_ notification: Notification) {
+            guard let text = notification.object as? NSTextView else { return }
+            buffer.replaceText(text.string)
+            highlight(text)
+        }
+
+        @objc func viewportChanged(_ notification: Notification) {
+            guard let clip = notification.object as? NSClipView, let text = clip.documentView as? NSTextView else { return }
+            highlight(text)
+        }
+
+        func highlight(_ text: NSTextView, clear: Bool = false) {
+            guard let layout = text.layoutManager, let container = text.textContainer,
+                  let string = text.textStorage?.string, !string.isEmpty else { return }
+            if clear {
+                layout.removeTemporaryAttribute(.foregroundColor, forCharacterRange: NSRange(location: 0, length: string.utf16.count))
+            }
+            guard let syntax, let colors else { return }
+            let origin = text.textContainerOrigin
+            let bounds = text.visibleRect.offsetBy(dx: -origin.x, dy: -origin.y)
+            let glyphs = layout.glyphRange(forBoundingRect: bounds, in: container)
+            let characters = layout.characterRange(forGlyphRange: glyphs, actualGlyphRange: nil)
+            let nsString = string as NSString
+            guard characters.length > 0, NSMaxRange(characters) <= nsString.length else { return }
+            let lines = nsString.lineRange(for: characters)
+            layout.removeTemporaryAttribute(.foregroundColor, forCharacterRange: lines)
+            nsString.enumerateSubstrings(in: lines, options: .byLines) { line, range, _, _ in
+                guard let line else { return }
+                for token in syntax.tokens(in: line) {
+                    let target = NSRange(location: range.location + token.range.location, length: token.range.length)
+                    layout.addTemporaryAttribute(.foregroundColor, value: colors.syntaxInk(token.kind), forCharacterRange: target)
+                }
+            }
+        }
+    }
+
+    private final class CodeTextView: NSTextView {
+        var save: (() -> Void)?
+
+        override func performKeyEquivalent(with event: NSEvent) -> Bool {
+            if window?.firstResponder === self, isEditable,
+               event.modifierFlags.intersection(.deviceIndependentFlagsMask) == .command,
+               event.charactersIgnoringModifiers?.lowercased() == "s" {
+                save?()
+                return true
+            }
+            return super.performKeyEquivalent(with: event)
         }
     }
 }

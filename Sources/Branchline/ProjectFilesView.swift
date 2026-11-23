@@ -19,8 +19,34 @@ final class ProjectFilesModel {
     fileprivate private(set) var expanded: Set<String> = []
     fileprivate private(set) var listings: [String: ProjectListing] = [:]
     @ObservationIgnored private var loads: [String: Task<Void, Never>] = [:]
+    private var unsavedEditors: [String: InlineFileBuffer] = [:]
 
     init(root: URL) { self.root = root }
+
+    var hasUnsavedEditors: Bool { !unsavedEditors.isEmpty }
+
+    func pendingEditor(at path: String) -> InlineFileBuffer? { unsavedEditors[path] }
+
+    func editor(at path: String, draft: WorktreeFileDraft) -> InlineFileBuffer {
+        if let editor = pendingEditor(at: path) { return editor }
+        return InlineFileBuffer(root: root, path: path, draft: draft) { [weak self] editor in
+            self?.unsavedEditors[path] = editor.dirty || editor.saving ? editor : nil
+        }
+    }
+
+    func discardEditor(_ editor: InlineFileBuffer) {
+        guard !editor.saving, pendingEditor(at: editor.path) === editor else { return }
+        editor.cancelPendingSave()
+        unsavedEditors[editor.path] = nil
+        previewRevision &+= 1
+    }
+
+    func flushEditors() async -> InlineFileBuffer? {
+        for editor in Array(unsavedEditors.values) {
+            if !(await editor.flush()) { return editor }
+        }
+        return nil
+    }
 
     func refresh() {
         guard visible else { return }

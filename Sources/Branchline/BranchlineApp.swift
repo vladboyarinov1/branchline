@@ -4,6 +4,7 @@ import SwiftUI
 @main
 struct BranchlineApp: App {
     @State private var desk = WorkspaceTabs()
+    @NSApplicationDelegateAdaptor(BranchlineTermination.self) private var termination
     @AppStorage(DiffView.syntaxHighlightingKey) private var highlightsSyntax = true
 
     var body: some Scene {
@@ -11,6 +12,7 @@ struct BranchlineApp: App {
             MainWindow(desk: desk)
                 .frame(minWidth: 950, minHeight: 650)
                 .preferredColorScheme(.dark)
+                .onAppear { termination.desk = desk }
         }
         .windowStyle(.hiddenTitleBar)
         .defaultSize(width: 1360, height: 850)
@@ -84,10 +86,32 @@ struct BranchlineApp: App {
 
 }
 
+@MainActor
+final class BranchlineTermination: NSObject, NSApplicationDelegate {
+    weak var desk: WorkspaceTabs?
+
+    func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
+        guard let desk, desk.hasUnsavedEditors else { return .terminateNow }
+        Task { sender.reply(toApplicationShouldTerminate: await desk.flushEditors()) }
+        return .terminateLater
+    }
+}
+
+private struct ProjectTabFrames: PreferenceKey {
+    static let defaultValue: [URL: CGRect] = [:]
+
+    static func reduce(value: inout [URL: CGRect], nextValue: () -> [URL: CGRect]) {
+        value.merge(nextValue(), uniquingKeysWith: { _, last in last })
+    }
+}
+
 private struct MainWindow: View {
     let desk: WorkspaceTabs
     @Environment(\.scenePhase) private var scenePhase
     @State private var booted = false
+    @State private var tabFrames: [URL: CGRect] = [:]
+    @GestureState private var tabDrag: (source: URL, location: CGPoint)?
+    private let tabCoordinateSpace = "project-tabs"
 
     var body: some View {
         VStack(spacing: 0) {
@@ -169,6 +193,8 @@ private struct MainWindow: View {
                 .workbenchHint("Открыть репозитории", shortcut: KeyboardShortcut("o"))
             }
         }
+        .coordinateSpace(name: tabCoordinateSpace)
+        .onPreferenceChange(ProjectTabFrames.self) { tabFrames = $0 }
     }
 
     private var tabButtons: some View {
@@ -213,7 +239,36 @@ private struct MainWindow: View {
         .foregroundStyle(selected ? Palette.text : Palette.muted)
         .frame(maxWidth: 210)
         .background(selected ? Palette.selection : .clear, in: RoundedRectangle(cornerRadius: 5))
+        .contentShape(Rectangle())
+        .background {
+            GeometryReader { geometry in
+                Color.clear.preference(key: ProjectTabFrames.self,
+                    value: [tab.id: geometry.frame(in: .named(tabCoordinateSpace))])
+            }
+        }
+        .overlay {
+            if let tabDrag, tabDrag.source != tab.id, tabFrames[tab.id]?.contains(tabDrag.location) == true {
+                RoundedRectangle(cornerRadius: 5).strokeBorder(Palette.accentBorder).allowsHitTesting(false)
+            }
+        }
+        .simultaneousGesture(
+            DragGesture(minimumDistance: 6, coordinateSpace: .named(tabCoordinateSpace))
+                .updating($tabDrag) { value, state, _ in state = (tab.id, value.location) }
+                .onEnded { value in
+                    if let target = desk.tabs.first(where: { tabFrames[$0.id]?.contains(value.location) == true }) {
+                        desk.move(tab.id, to: target.id)
+                    }
+                }
+        )
         .contextMenu {
+            if let index = desk.tabs.firstIndex(where: { $0.id == tab.id }) {
+                if index > 0 {
+                    Button("Переместить влево") { desk.move(tab.id, to: desk.tabs[index - 1].id) }
+                }
+                if index + 1 < desk.tabs.count {
+                    Button("Переместить вправо") { desk.move(tab.id, to: desk.tabs[index + 1].id) }
+                }
+            }
             Button("Показать в Finder") { NSWorkspace.shared.activateFileViewerSelecting([tab.root]) }
             Button("Закрыть вкладку") { desk.close(tab.id) }
                 .disabled(tab.loaded?.activity != nil)

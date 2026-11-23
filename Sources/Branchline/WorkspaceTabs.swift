@@ -116,9 +116,45 @@ final class WorkspaceTabs {
         }
     }
 
+    @discardableResult
+    func move(_ source: URL, to target: URL) -> Bool {
+        guard source != target, let from = tabs.firstIndex(where: { $0.id == source }),
+              let to = tabs.firstIndex(where: { $0.id == target }) else { return false }
+        let tab = tabs.remove(at: from)
+        tabs.insert(tab, at: to)
+        save()
+        return true
+    }
+
+    var hasUnsavedEditors: Bool {
+        tabs.contains { $0.loaded?.projectFiles?.hasUnsavedEditors == true }
+    }
+
+    func flushEditors() async -> Bool {
+        for tab in tabs {
+            if let failed = await tab.loaded?.projectFiles?.flushEditors() {
+                reportUnsaved(failed, in: tab)
+                return false
+            }
+        }
+        return true
+    }
+
+    private func reportUnsaved(_ editor: InlineFileBuffer, in tab: Tab) {
+        notice = GitNotice(title: "Не удалось сохранить файл",
+                           message: "\(tab.name)/\(editor.path)\n\(editor.error ?? "")")
+    }
+
     func close(_ id: URL) {
         guard let index = tabs.firstIndex(where: { $0.id == id }), tabs[index].loaded?.activity == nil else { return }
         let tab = tabs[index]
+        if let project = tab.loaded?.projectFiles, project.hasUnsavedEditors {
+            Task {
+                if let failed = await project.flushEditors() { reportUnsaved(failed, in: tab) }
+                else { close(id) }
+            }
+            return
+        }
         if let terminal = tab.loaded?.terminalDock, terminal.hasRunningSessions {
             let alert = NSAlert()
             alert.messageText = "Закрыть проект «\(tab.name)»?"

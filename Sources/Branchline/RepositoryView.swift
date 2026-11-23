@@ -386,10 +386,12 @@ struct RepositoryView<ProjectTabs: View>: View {
             Button { sheet = .branches } label: {
                 HStack(spacing: 5) {
                     GitGlyph.branch.glyph(size: 14).foregroundStyle(Palette.accent)
-                    Text(workspace.branch).lineLimit(1).truncationMode(.middle)
+                    Text(workspace.branch.count > 22
+                         ? String(workspace.branch.prefix(10)) + "…" + String(workspace.branch.suffix(11))
+                         : workspace.branch)
                     Image(systemName: "chevron.down").font(.system(size: 7, weight: .semibold))
                 }
-                .frame(maxWidth: 150)
+                .fixedSize(horizontal: true, vertical: false)
             }
             .buttonStyle(StudioButton(kind: .quiet))
             .workbenchHint(workspace.status?.upstream.map { "Git Branches · \($0)" } ?? "Git Branches")
@@ -619,7 +621,6 @@ struct RepositoryView<ProjectTabs: View>: View {
                         get: { workspace.amend }, set: workspace.updateAmend
                     ))
                     .font(.system(size: 11))
-                    .workbenchHint("Изменить последний коммит", shortcut: GitKeymap.amend)
                     .disabled(workspace.activity != nil && !workspace.isUpdatingIndex)
                 }
                 CommitMessageEditor(
@@ -715,7 +716,6 @@ struct RepositoryView<ProjectTabs: View>: View {
             workspace.setIncluded(eligible, included: $0)
         }
         .frame(width: 22, height: 24)
-        .workbenchHint(title)
     }
 
     private func inclusionAction(_ included: Bool) -> String {
@@ -736,7 +736,6 @@ struct RepositoryView<ProjectTabs: View>: View {
         .frame(width: 22, height: 24)
         .disabled(workspace.activity != nil && !workspace.isUpdatingIndex)
         .allowsHitTesting(!workspace.isUpdatingIndex)
-        .workbenchHint("\(action) · \(label)")
     }
 
     private func fileRow(_ file: GitFile, context: GitPatchContext, change: GitChange?) -> some View {
@@ -759,7 +758,6 @@ struct RepositoryView<ProjectTabs: View>: View {
                 .controlSize(.small)
                 .frame(width: 22, height: 24)
                 .disabled(file.unstaged == .conflicted || workspace.activity != nil)
-                .workbenchHint(title)
                 .padding(.leading, 19)
             } else if let indexed {
                 indexCheckbox([file], indexed: indexed, label: file.name)
@@ -860,8 +858,7 @@ struct RepositoryView<ProjectTabs: View>: View {
     private var patchPane: some View {
         VStack(spacing: 0) {
             if projectVisible, let project = workspace.projectFiles, let path = project.previewPath {
-                ProjectFilePreview(root: project.root, path: path, revision: project.previewRevision,
-                                   onEdit: { editFile(path) })
+                ProjectFilePreview(model: project, path: path, revision: project.previewRevision)
             } else if let focus = workspace.focus {
                 let labels = workspace.patchLabels
                 DiffView(focus: focus, patch: workspace.patch, oldLabel: labels.0, newLabel: labels.1,

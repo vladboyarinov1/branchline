@@ -25,7 +25,7 @@ struct NPMRunControl: View {
             let selected = scripts.first(where: { $0 == workspace.npmScript }) ??
                 scripts.first(where: { $0 == "format" }) ??
                 scripts.first(where: { $0 == "prettier" }) ?? first
-            HStack(spacing: 1) {
+            HStack(spacing: 0) {
                 Menu {
                     ForEach(scripts, id: \.self) { name in
                         Button {
@@ -36,22 +36,29 @@ struct NPMRunControl: View {
                         }
                     }
                 } label: {
-                    Text(selected).lineLimit(1).truncationMode(.middle)
+                    Text(selected.count > 18 ? String(selected.prefix(17)) + "…" : selected)
+                        .font(.system(size: 12, weight: .medium))
                 }
                 .menuStyle(.borderlessButton)
-                .frame(maxWidth: 126)
+                .fixedSize()
+                .frame(height: 28)
+                .padding(.leading, 9)
                 .accessibilityLabel("npm-скрипт")
                 .accessibilityValue(selected)
                 Button {
                     workspace.runNPMScript(selected)
                 } label: {
-                    Image(systemName: "play.fill").foregroundStyle(Palette.green)
+                    Image(systemName: "play.fill")
+                        .font(.system(size: 10, weight: .semibold))
+                        .foregroundStyle(workspace.terminalDock?.isRunningScript == true ? Palette.disabled : Palette.green)
+                        .frame(width: 27, height: 28)
                 }
-                .buttonStyle(StudioButton(kind: .quiet))
+                .buttonStyle(.plain)
                 .accessibilityLabel("Запустить npm: \(selected)")
                 .workbenchHint("npm run \(selected)")
                 .disabled(workspace.terminalDock?.isRunningScript == true || workspace.activity != nil)
             }
+            .background(Palette.control, in: RoundedRectangle(cornerRadius: 6))
         }
     }
 }

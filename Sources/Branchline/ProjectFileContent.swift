@@ -5,9 +5,13 @@ enum ProjectFileContent: Sendable {
     case text(String, truncated: Bool)
     case unsupported
 
-    private static let byteLimit = 512 * 1024
+    fileprivate static let byteLimit = 512 * 1024
 
     static func read(root: URL, path: String) throws -> Self {
+        try load(root: root, path: path).content
+    }
+
+    static func load(root: URL, path: String) throws -> (content: Self, draft: WorktreeFileDraft?) {
         try Task.checkCancellation()
         let components = try ProjectFileSystem.components(path)
         guard let name = components.last else { throw POSIXError(.EINVAL) }
@@ -17,15 +21,16 @@ enum ProjectFileContent: Sendable {
         let flags = O_RDONLY | O_CLOEXEC | O_NOFOLLOW | O_NONBLOCK
         let file = name.withCString { openat(directory, $0, flags) }
         guard file >= 0 else {
-            if errno == ELOOP { return .unsupported }
+            if errno == ELOOP { return (.unsupported, nil) }
             throw ProjectFileSystem.error()
         }
         defer { close(file) }
 
         guard let snapshot = try readBytes(file),
               let text = decode(snapshot.bytes, truncated: snapshot.truncated),
-              !text.unicodeScalars.contains(where: isBinaryControl) else { return .unsupported }
-        return .text(text, truncated: snapshot.truncated)
+              !text.unicodeScalars.contains(where: isBinaryControl) else { return (.unsupported, nil) }
+        let draft = snapshot.truncated ? nil : WorktreeFileDraft(text: text, original: snapshot.bytes)
+        return (.text(text, truncated: snapshot.truncated), draft)
     }
 
     fileprivate static func readBytes(_ file: Int32) throws -> (bytes: Data, truncated: Bool, info: stat)? {
@@ -143,7 +148,7 @@ enum WorktreeFileError: LocalizedError {
 
 struct WorktreeFileDraft: Sendable {
     let text: String
-    private let original: Data
+    fileprivate let original: Data
 
     static func read(root: URL, path: String) throws -> Self {
         try withParent(root: root, path: path) { directory, name in
@@ -156,12 +161,14 @@ struct WorktreeFileDraft: Sendable {
         }
     }
 
-    func save(_ text: String, root: URL, path: String) throws {
-        guard !text.utf8.elementsEqual(self.text.utf8) else { return }
+    @discardableResult
+    func save(_ text: String, root: URL, path: String) throws -> Self {
+        guard !text.utf8.elementsEqual(self.text.utf8) else { return self }
         let (bomSize, encoding) = ProjectFileContent.encoding(of: original)
         guard let payload = text.data(using: encoding) else { throw WorktreeFileError.unsupported }
         var bytes = Data(original.prefix(bomSize))
         bytes.append(payload)
+        guard bytes.count <= ProjectFileContent.byteLimit else { throw WorktreeFileError.unsupported }
         try Self.withParent(root: root, path: path) { directory, name in
             let current = try Self.snapshot(in: directory, name: name)
             guard current.bytes == original else { throw WorktreeFileError.changed }
@@ -180,6 +187,7 @@ struct WorktreeFileDraft: Sendable {
             }
             guard renameat(directory, temporary, directory, name) == 0 else { throw ProjectFileSystem.error() }
         }
+        return Self(text: text, original: bytes)
     }
 
     static func trash(root: URL, path: String) throws {
