@@ -36,6 +36,7 @@ struct RepositoryView<ProjectTabs: View>: View {
 
     private enum ActionSheet: Identifiable {
         case branch(GitRef?), rename(GitRef), stash, push(PushDestination, [String]), actions(Bool), branches, keymap
+        case editFile(URL, String)
         var id: Int {
             switch self {
             case .branch: 0
@@ -45,6 +46,7 @@ struct RepositoryView<ProjectTabs: View>: View {
             case .actions: 4
             case .branches: 5
             case .keymap: 6
+            case .editFile: 7
             }
         }
     }
@@ -126,6 +128,8 @@ struct RepositoryView<ProjectTabs: View>: View {
                                 canCreate: canCreateBranch)
             case .keymap:
                 GitKeymapView().workbenchHints()
+            case .editFile(let root, let path):
+                WorktreeFileEditor(root: root, path: path, saved: workspace.worktreeFileDidChange)
             }
         }
         .onChange(of: workspace.activity) { _, _ in
@@ -141,6 +145,9 @@ struct RepositoryView<ProjectTabs: View>: View {
             guard workspace.feedback != nil else { return }
             try? await Task.sleep(for: .seconds(4))
             if !Task.isCancelled { workspace.clearFeedback() }
+        }
+        .task(id: workspace.npmManifestRevision) {
+            await workspace.loadNPMScripts()
         }
         .onDisappear { syncTask?.cancel() }
     }
@@ -375,6 +382,7 @@ struct RepositoryView<ProjectTabs: View>: View {
                     .allowsHitTesting(false)
                 }
                 .clipped()
+            NPMRunControl(workspace: workspace)
             Button { sheet = .branches } label: {
                 HStack(spacing: 5) {
                     GitGlyph.branch.glyph(size: 14).foregroundStyle(Palette.accent)
@@ -479,7 +487,7 @@ struct RepositoryView<ProjectTabs: View>: View {
                 } else if showsChangeSidebar {
                     panel {
                         if let project = workspace.projectFiles, projectVisible {
-                            ProjectFilesView(model: project)
+                            ProjectFilesView(model: project, onEdit: editFile)
                         } else { changesPane }
                     }
                         .frame(minWidth: 244, idealWidth: 276, maxWidth: 310)
@@ -770,6 +778,7 @@ struct RepositoryView<ProjectTabs: View>: View {
                     } else {
                         Color.clear.frame(width: 15).accessibilityHidden(true)
                     }
+                    FileTypeIcon(name: file.name)
                     Text(file.name)
                         .font(.system(size: 12, weight: selected ? .semibold : .regular))
                         .lineLimit(1)
@@ -806,6 +815,13 @@ struct RepositoryView<ProjectTabs: View>: View {
                 diffFocusRequest &+= 1
             }
             Button("Show History") { workspace.showFileHistory(file) }
+            if context.isWorkingFile, file.unstaged != .deleted,
+               file.staged != .deleted || file.unstaged != nil {
+                Button("Редактировать файл…") { editFile(file.path) }
+                    .disabled(workspace.activity != nil)
+                Button("Переместить в Корзину…", role: .destructive) { trashFile(file) }
+                    .disabled(workspace.activity != nil)
+            }
             if context.isWorkingFile, context != .staged, allowsRollback(file) {
                 Button("Rollback…") { confirmRollback(file) }.disabled(workspace.activity != nil)
             }
@@ -827,10 +843,32 @@ struct RepositoryView<ProjectTabs: View>: View {
         }
     }
 
+    private func editFile(_ path: String) {
+        guard workspace.activity == nil, let root = workspace.git?.root else { return }
+        sheet = .editFile(root, path)
+    }
+
+    private func trashFile(_ file: GitFile) {
+        guard workspace.activity == nil, let root = workspace.git?.root else { return }
+        confirmation = Confirmation(title: "Переместить «\(file.name)» в Корзину?",
+                                    message: file.path, button: "В Корзину", destructive: true) {
+            guard workspace.activity == nil else { return }
+            Task {
+                do {
+                    try await Task.detached { try WorktreeFileDraft.trash(root: root, path: file.path) }.value
+                    workspace.worktreeFileDidChange()
+                } catch {
+                    workspace.report("Не удалось переместить файл в Корзину", error)
+                }
+            }
+        }
+    }
+
     private var patchPane: some View {
         VStack(spacing: 0) {
             if projectVisible, let project = workspace.projectFiles, let path = project.previewPath {
-                ProjectFilePreview(root: project.root, path: path, revision: project.previewRevision)
+                ProjectFilePreview(root: project.root, path: path, revision: project.previewRevision,
+                                   onEdit: { editFile(path) })
             } else if let focus = workspace.focus {
                 let labels = workspace.patchLabels
                 DiffView(focus: focus, patch: workspace.patch, oldLabel: labels.0, newLabel: labels.1,

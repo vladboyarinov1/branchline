@@ -42,9 +42,17 @@ final class ProjectFilesModel {
         if visible { load("") }
     }
 
-    fileprivate func suspend() {
+    func pauseLoads() {
         for load in loads.values { load.cancel() }
         loads.removeAll()
+        listings = listings.filter { _, listing in
+            if case .loading = listing { return false }
+            return true
+        }
+    }
+
+    func suspend() {
+        pauseLoads()
         listings.removeAll()
     }
 
@@ -255,6 +263,7 @@ private enum ProjectDirectory {
 
 struct ProjectFilesView: View {
     let model: ProjectFilesModel
+    let onEdit: (String) -> Void
     @FocusState private var treeFocused: Bool
 
     var body: some View {
@@ -281,7 +290,6 @@ struct ProjectFilesView: View {
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .background(Palette.panel)
         .onAppear(perform: model.loadRoot)
-        .onDisappear(perform: model.suspend)
     }
 
     @ViewBuilder private var content: some View {
@@ -355,11 +363,15 @@ struct ProjectFilesView: View {
                 } else {
                     Color.clear.frame(width: 11, height: 1).accessibilityHidden(true)
                 }
-                Image(systemName: entry.kind.icon)
-                    .font(.system(size: 11, weight: .medium))
-                    .frame(width: 15)
-                    .foregroundStyle(isFolder ? Palette.blue : Palette.muted)
-                    .accessibilityHidden(true)
+                if entry.kind == .file {
+                    FileTypeIcon(name: entry.name)
+                } else {
+                    Image(systemName: entry.kind.icon)
+                        .font(.system(size: 11, weight: .medium))
+                        .frame(width: 17)
+                        .foregroundStyle(isFolder ? Palette.blue : Palette.muted)
+                        .accessibilityHidden(true)
+                }
                 Text(entry.name)
                     .font(.system(size: 12, weight: selected ? .semibold : .regular))
                     .truncationMode(.middle)
@@ -386,7 +398,8 @@ struct ProjectFilesView: View {
         .help(entry.path)
         .contextMenu {
             if entry.kind == .file {
-                Button("Открыть") { open(entry) }
+                Button("Редактировать файл…") { onEdit(entry.path) }
+                Button("Открыть во внешнем приложении") { open(entry) }
             }
             Button("Показать в Finder") { NSWorkspace.shared.activateFileViewerSelecting([url]) }
             Button("Скопировать путь") {

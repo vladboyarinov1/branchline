@@ -23,6 +23,22 @@ final class TerminalDock {
         sessions.contains(where: \.running)
     }
 
+    var isRunningScript: Bool { sessions.contains { $0.isScript && $0.running } }
+
+    func runScript(_ name: String) {
+        guard !isRunningScript else { return }
+        let session = TerminalSession(root: root, number: nextNumber, script: name)
+        if let previous = sessions.firstIndex(where: \.isScript) {
+            sessions[previous].stop()
+            sessions[previous] = session
+        } else {
+            sessions.append(session)
+        }
+        selection = session.id
+        visible = true
+        focusRequest &+= 1
+    }
+
     func toggle() {
         if visible {
             hide()
@@ -78,15 +94,17 @@ final class TerminalDock {
 final class TerminalSession: Identifiable, LocalProcessTerminalViewDelegate {
     let id = UUID()
     let title: String
+    let isScript: Bool
     private(set) var view: LocalProcessTerminalView?
     private(set) var running = true
     private(set) var status: String?
     private(set) var exitCode: Int32?
 
-    init(root: URL, number: Int) {
-        let shell = Self.loginShell()
+    init(root: URL, number: Int, script: String? = nil) {
+        let shell = script == nil ? Self.loginShell() : "/bin/zsh"
         let name = URL(fileURLWithPath: shell).lastPathComponent
-        title = number == 1 ? name : "\(name) \(number)"
+        title = script.map { "npm: \($0)" } ?? (number == 1 ? name : "\(name) \(number)")
+        isScript = script != nil
         let options = TerminalOptions(
             cursorStyle: .steadyBlock,
             scrollback: 1_200,
@@ -113,7 +131,8 @@ final class TerminalSession: Identifiable, LocalProcessTerminalViewDelegate {
         environment["TERM_PROGRAM"] = "Branchline"
         environment["SHELL"] = shell
         environment["PWD"] = root.path
-        terminal.startProcess(executable: shell, args: ["-l"], environment: environment.map { "\($0.key)=\($0.value)" },
+        terminal.startProcess(executable: shell, args: script.map(NPMScripts.arguments) ?? ["-l"],
+                              environment: environment.map { "\($0.key)=\($0.value)" },
                               currentDirectory: root.path)
     }
 
@@ -140,7 +159,7 @@ final class TerminalSession: Identifiable, LocalProcessTerminalViewDelegate {
 
     func processFailedToStart(source: TerminalView, error: LocalProcessError) {
         running = false
-        status = "Не удалось запустить оболочку"
+        status = isScript ? "Не удалось запустить npm-скрипт" : "Не удалось запустить оболочку"
     }
 
     func sizeChanged(source: LocalProcessTerminalView, newCols: Int, newRows: Int) {}

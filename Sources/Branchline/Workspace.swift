@@ -94,6 +94,9 @@ final class Workspace {
     private(set) var favoriteRefs = Set<String>()
     var commandRequest: CommandRequest?
     var terminalDock: TerminalDock?
+    var npmScript: String?
+    private(set) var npmScripts: [String] = []
+    private(set) var npmManifestRevision: UInt = 0
     var projectFiles: ProjectFilesModel?
     private(set) var commitMode: CommitMode = .selectedFiles
     private(set) var includedPaths = Set<String>()
@@ -242,7 +245,7 @@ final class Workspace {
         commitMessage = UserDefaults.standard.string(forKey: key) ?? ""
     }
 
-    func setFront(_ value: Bool) {
+    func setFront(_ value: Bool, keepSnapshot: Bool = false) {
         guard isFront != value else { return }
         isFront = value
         if value {
@@ -250,12 +253,14 @@ final class Workspace {
             let initialSnapshot = watcher?.isRunning == true && pendingChanges.isEmpty ? status : nil
             if watcher?.isRunning != true { startWatching(git) }
             // Read the remembered file while status checks the rest of the working tree.
-            let restoringPreview = initialSnapshot == nil && activity == nil && focusIsWorkingFile ? focus : nil
+            let restoringPreview = initialSnapshot == nil && activity == nil && focusIsWorkingFile && patch == nil
+                ? focus : nil
             if let restoringPreview { selectPatch(restoringPreview.file, restoringPreview.context) }
             if mode == .history && comparedRef == nil && entries.isEmpty { isHistoryLoading = true }
             refresh(.everything, snapshot: initialSnapshot, restoringPreview: restoringPreview)
             if mode == .history && comparedRef == nil && !focusIsWorkingFile { queueDetails(preferred: focus) }
-            if let focus, comparedRef != nil { selectPatch(focus.file, focus.context) }
+            if let focus, comparedRef != nil { loadPreview(focus, force: true) }
+            projectFiles?.refresh()
         } else {
             watcher = nil
             watchedRefresh?.cancel()
@@ -273,17 +278,24 @@ final class Workspace {
             isExtrasLoading = false
             isHistoryLoading = false
             isHistoryReplacing = false
-            hasWorkingStatus = false
-            restoreHistoryCount = entries.count
-            entries = []
-            refs = []
-            status?.files = []
-            detail = nil
-            stashes = []
-            worktrees = []
-            patch = nil
-            patchError = nil
+            projectFiles?.pauseLoads()
+            if !keepSnapshot { discardInactiveSnapshot() }
         }
+    }
+
+    func discardInactiveSnapshot() {
+        guard !isFront else { return }
+        hasWorkingStatus = false
+        if !entries.isEmpty { restoreHistoryCount = entries.count }
+        entries = []
+        refs = []
+        status?.files = []
+        detail = nil
+        stashes = []
+        worktrees = []
+        patch = nil
+        patchError = nil
+        projectFiles?.suspend()
     }
 
     private func startWatching(_ repository: Git) {
@@ -464,8 +476,28 @@ final class Workspace {
 
     private func repositoryDidChange(_ changes: RepositoryChanges) {
         guard watcher != nil else { return }
+        if changes.affectsWorkingPatch(for: "package.json", originalPath: nil) {
+            npmManifestRevision &+= 1
+        }
         pendingChanges.merge(changes)
         scheduleWatchedRefresh()
+    }
+
+    func loadNPMScripts() async {
+        guard let root = git?.root else { return }
+        let names = await Task.detached(priority: .utility) { NPMScripts.names(in: root) }.value
+        if !Task.isCancelled, npmScripts != names { npmScripts = names }
+    }
+
+    func runNPMScript(_ name: String) {
+        guard let root = git?.root, activity == nil, npmScripts.contains(name) else { return }
+        if terminalDock == nil { terminalDock = TerminalDock(root: root) }
+        terminalDock?.runScript(name)
+    }
+
+    func worktreeFileDidChange() {
+        projectFiles?.refresh()
+        refresh()
     }
 
     private func scheduleWatchedRefresh() {

@@ -18,6 +18,7 @@ final class WorkspaceTabs {
     private(set) var loading = false
     @ObservationIgnored private var restored = false
     @ObservationIgnored private var opening: Task<Void, Never>?
+    @ObservationIgnored private var previousID: URL?
 
     var active: Workspace? { tabs.first(where: { $0.id == activeID })?.loaded }
 
@@ -161,7 +162,13 @@ final class WorkspaceTabs {
     }
 
     private func switchTo(_ id: URL, workspace: Workspace) {
-        if activeID != id { active?.setFront(false) }
+        if activeID != id {
+            if let previousID, previousID != id {
+                tabs.first(where: { $0.id == previousID })?.loaded?.discardInactiveSnapshot()
+            }
+            previousID = activeID
+            active?.setFront(false, keepSnapshot: true)
+        }
         activeID = id
         workspace.setFront(true)
         recent = [id.path] + recent.filter { $0 != id.path }.prefix(12)

@@ -394,6 +394,7 @@ struct ProjectFilePreview: View {
     let root: URL
     let path: String
     let revision: UInt
+    let onEdit: () -> Void
     @AppStorage(DiffView.syntaxHighlightingKey) private var highlightsSyntax = true
     @Environment(\.colorScheme) private var colorScheme
     @State private var loaded: Loaded?
@@ -422,6 +423,17 @@ struct ProjectFilePreview: View {
         VStack(spacing: 0) {
             CodeFileHeading(file: GitFile(path: shownPath), pending: loaded?.path != path,
                             loadingLabel: "Загрузка файла", colors: colors)
+                .overlay(alignment: .trailing) {
+                    if shownPath == path, case .document = loaded?.content {
+                        Button(action: onEdit) {
+                            Image(systemName: "pencil").frame(width: 26, height: 23)
+                        }
+                        .buttonStyle(.plain)
+                        .accessibilityLabel("Редактировать файл")
+                        .workbenchHint("Редактировать файл")
+                        .padding(.trailing, WorkbenchLayout.panelInset)
+                    }
+                }
             StudioRule()
             switch loaded?.content {
             case .document(let document) where document.rowCount > 0:
