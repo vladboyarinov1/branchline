@@ -45,7 +45,7 @@ struct WorktreeFileEditor: View {
                 Button("Сохранить", action: save)
                     .keyboardShortcut(.defaultAction)
                     .keyboardShortcut("s")
-                    .disabled(draft == nil || saving || text.utf8.elementsEqual(draft?.text.utf8 ?? "".utf8))
+                    .disabled(saving || (draft.map { text.hasSameFileBytes(as: $0.text) } ?? true))
             }
         }
         .padding(16)

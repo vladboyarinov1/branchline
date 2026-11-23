@@ -1,6 +1,21 @@
 import Darwin
 import Foundation
 
+extension String {
+    // Swift equality treats canonically equivalent Unicode sequences as equal.
+    func hasSameFileBytes(as other: String) -> Bool {
+        var first = self
+        var second = other
+        return first.withUTF8 { lhs in
+            second.withUTF8 { rhs in
+                guard lhs.count == rhs.count else { return false }
+                guard let left = lhs.baseAddress, let right = rhs.baseAddress else { return lhs.isEmpty }
+                return lhs.isEmpty || memcmp(left, right, lhs.count) == 0
+            }
+        }
+    }
+}
+
 enum ProjectFileContent: Sendable {
     case text(String, truncated: Bool)
     case unsupported
@@ -163,7 +178,7 @@ struct WorktreeFileDraft: Sendable {
 
     @discardableResult
     func save(_ text: String, root: URL, path: String) throws -> Self {
-        guard !text.utf8.elementsEqual(self.text.utf8) else { return self }
+        guard !text.hasSameFileBytes(as: self.text) else { return self }
         let (bomSize, encoding) = ProjectFileContent.encoding(of: original)
         guard let payload = text.data(using: encoding) else { throw WorktreeFileError.unsupported }
         var bytes = Data(original.prefix(bomSize))

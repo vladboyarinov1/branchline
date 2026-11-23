@@ -521,11 +521,16 @@ private struct InlineCodeEditor: NSViewRepresentable {
     let syntax: DiffSyntax?
     let editable: Bool
 
-    func makeCoordinator() -> Coordinator { Coordinator(buffer: buffer) }
+    func makeCoordinator() -> Coordinator { Coordinator(buffer: buffer, displayedText: text) }
 
     func makeNSView(context: Context) -> NSScrollView {
         let scroll = NSScrollView()
-        let text = CodeTextView(frame: .zero)
+        // The surrounding SwiftUI surface already paints the editor background.
+        scroll.drawsBackground = false
+        let text = CodeTextView(usingTextLayoutManager: false)
+        text.drawsBackground = false
+        // Let AppKit lay out the visible lines without walking the whole file.
+        text.layoutManager?.allowsNonContiguousLayout = true
         text.isRichText = false
         text.importsGraphics = false
         text.allowsUndo = true
@@ -547,6 +552,9 @@ private struct InlineCodeEditor: NSViewRepresentable {
         text.textContainer?.containerSize = text.maxSize
         text.setAccessibilityLabel("Содержимое файла")
         text.delegate = context.coordinator
+        text.prepareHighlighting = { [weak coordinator = context.coordinator] text in
+            coordinator?.highlight(text)
+        }
         text.save = { [weak buffer] in buffer?.saveNow() }
         scroll.documentView = text
         scroll.hasVerticalScroller = true
@@ -562,24 +570,23 @@ private struct InlineCodeEditor: NSViewRepresentable {
         guard let text = scroll.documentView as? CodeTextView else { return }
         let coordinator = context.coordinator
         let styleChanged = coordinator.syntax != syntax || coordinator.colors != colors
-        let contentChanged = !text.string.utf8.elementsEqual(self.text.utf8)
-        text.isEditable = editable
+        let contentChanged = !coordinator.displayedText.hasSameFileBytes(as: self.text)
+        if text.isEditable != editable { text.isEditable = editable }
         if styleChanged || coordinator.colors == nil {
-            text.backgroundColor = colors.canvas
             text.textColor = colors.text
             text.insertionPointColor = colors.text
-            scroll.backgroundColor = colors.canvas
         }
         if contentChanged {
             let selection = text.selectedRange()
             text.string = self.text
+            coordinator.displayedText = self.text
             let length = (text.string as NSString).length
             text.setSelectedRange(NSRange(location: min(selection.location, length), length: 0))
             text.undoManager?.removeAllActions()
         }
         coordinator.syntax = syntax
         coordinator.colors = colors
-        if styleChanged || contentChanged { coordinator.highlight(text, clear: styleChanged) }
+        if styleChanged || contentChanged { coordinator.highlight(text, reset: true, clear: styleChanged) }
     }
 
     static func dismantleNSView(_ scroll: NSScrollView, coordinator: Coordinator) {
@@ -592,11 +599,19 @@ private struct InlineCodeEditor: NSViewRepresentable {
         var colors: DiffColors?
         var syntax: DiffSyntax?
 
-        init(buffer: InlineFileBuffer) { self.buffer = buffer }
+        var displayedText: String
+        private var highlightedLines: NSRange?
+
+        init(buffer: InlineFileBuffer, displayedText: String) {
+            self.buffer = buffer
+            self.displayedText = displayedText
+        }
 
         func textDidChange(_ notification: Notification) {
             guard let text = notification.object as? NSTextView else { return }
-            buffer.replaceText(text.string)
+            displayedText = text.string
+            buffer.replaceText(displayedText)
+            highlightedLines = nil
             highlight(text)
         }
 
@@ -605,20 +620,24 @@ private struct InlineCodeEditor: NSViewRepresentable {
             highlight(text)
         }
 
-        func highlight(_ text: NSTextView, clear: Bool = false) {
+        func highlight(_ text: NSTextView, reset: Bool = false, clear: Bool = false) {
             guard let layout = text.layoutManager, let container = text.textContainer,
                   let string = text.textStorage?.string, !string.isEmpty else { return }
+            if reset { highlightedLines = nil }
             if clear {
                 layout.removeTemporaryAttribute(.foregroundColor, forCharacterRange: NSRange(location: 0, length: string.utf16.count))
             }
             guard let syntax, let colors else { return }
             let origin = text.textContainerOrigin
             let bounds = text.visibleRect.offsetBy(dx: -origin.x, dy: -origin.y)
+            guard !bounds.isEmpty else { return }
             let glyphs = layout.glyphRange(forBoundingRect: bounds, in: container)
             let characters = layout.characterRange(forGlyphRange: glyphs, actualGlyphRange: nil)
             let nsString = string as NSString
             guard characters.length > 0, NSMaxRange(characters) <= nsString.length else { return }
             let lines = nsString.lineRange(for: characters)
+            guard highlightedLines != lines else { return }
+            highlightedLines = lines
             layout.removeTemporaryAttribute(.foregroundColor, forCharacterRange: lines)
             nsString.enumerateSubstrings(in: lines, options: .byLines) { line, range, _, _ in
                 guard let line else { return }
@@ -631,7 +650,13 @@ private struct InlineCodeEditor: NSViewRepresentable {
     }
 
     private final class CodeTextView: NSTextView {
+        var prepareHighlighting: ((NSTextView) -> Void)?
         var save: (() -> Void)?
+
+        override func viewWillDraw() {
+            prepareHighlighting?(self)
+            super.viewWillDraw()
+        }
 
         override func performKeyEquivalent(with event: NSEvent) -> Bool {
             if window?.firstResponder === self, isEditable,

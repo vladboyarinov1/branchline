@@ -78,11 +78,11 @@ final class InlineFileBuffer {
     func refreshIfClean(from draft: WorktreeFileDraft) {
         guard !dirty, !saving else { return }
         baseline = draft
-        if !text.utf8.elementsEqual(draft.text.utf8) { text = draft.text }
+        if !text.hasSameFileBytes(as: draft.text) { text = draft.text }
     }
 
     private func updateDirtyState() {
-        dirty = !text.utf8.elementsEqual(baseline.text.utf8)
+        dirty = !text.hasSameFileBytes(as: baseline.text)
         if !dirty { error = nil }
         changed(self)
     }
