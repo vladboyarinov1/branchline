@@ -6,7 +6,6 @@ struct HistoryEntry: Identifiable, Equatable, Sendable {
     let parents: [String]
     let subject: String
     let author: String
-    let email: String
     let date: Date
     let refs: [String]
     var isMerge = false
@@ -427,14 +426,11 @@ private struct HistoryRow: View, Equatable {
                     .accessibilityHidden(true)
             }
             message
-            VStack(alignment: .leading, spacing: 0) {
-                Text(entry.author).font(.system(size: 11)).lineLimit(1)
-                if !entry.email.isEmpty {
-                    Text(entry.email).font(.system(size: 9.5)).lineLimit(1).truncationMode(.middle)
-                }
-            }
-            .foregroundStyle(Palette.muted)
-            .frame(width: columns.author, alignment: .leading)
+            Text(entry.author)
+                .font(.system(size: 11))
+                .lineLimit(1)
+                .foregroundStyle(Palette.muted)
+                .frame(width: columns.author, alignment: .leading)
             Text(dateText)
                 .font(.system(size: 10.5).monospacedDigit())
                 .foregroundStyle(Palette.muted)
@@ -462,18 +458,14 @@ private struct HistoryRow: View, Equatable {
     }
 
     var toolTip: String {
-        ([subject, authorIdentity, entry.date.formatted(Self.timestamp), entry.id] + entry.refs)
+        ([subject, entry.author, entry.date.formatted(Self.timestamp), entry.id] + entry.refs)
             .joined(separator: "\n")
     }
 
     var accessibilitySummary: String {
-        var parts = [subject, authorIdentity, entry.date.formatted(Self.timestamp), "Хеш \(entry.id)"]
+        var parts = [subject, entry.author, entry.date.formatted(Self.timestamp), "Хеш \(entry.id)"]
         parts.append(contentsOf: entry.refs)
         return parts.joined(separator: ", ")
-    }
-
-    private var authorIdentity: String {
-        entry.email.isEmpty ? entry.author : "\(entry.author) <\(entry.email)>"
     }
 
     private var message: some View {
@@ -842,11 +834,9 @@ private struct ReusableHistoryTable: NSViewRepresentable {
                 if !appended { authorWidth = 140 }
                 let entries = appended ? source.entries.dropFirst(oldEntries.count) : source.entries[...]
                 let nameFont = NSFont.systemFont(ofSize: 11)
-                let emailFont = NSFont.systemFont(ofSize: 9.5)
                 for entry in entries {
                     let name = (entry.author as NSString).size(withAttributes: [.font: nameFont]).width
-                    let email = (entry.email as NSString).size(withAttributes: [.font: emailFont]).width
-                    authorWidth = max(authorWidth, min(270, ceil(max(name, email)) + 8))
+                    authorWidth = max(authorWidth, min(200, ceil(name) + 8))
                 }
             }
             updating = true

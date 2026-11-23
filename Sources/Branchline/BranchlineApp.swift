@@ -314,18 +314,36 @@ private struct MainWindow: View {
 
 struct WindowDragSpace: NSViewRepresentable {
     func makeNSView(context: Context) -> NSView { DragView() }
-    func updateNSView(_ nsView: NSView, context: Context) {}
+    func updateNSView(_ view: NSView, context: Context) {
+        if let window = view.window, window.isMovable { window.isMovable = false }
+    }
 
     private final class DragView: NSView {
+        private var start: (pointer: CGPoint, origin: CGPoint)?
+
         override func viewDidMoveToWindow() {
             super.viewDidMoveToWindow()
-            window?.isMovableByWindowBackground = false
+            // A hidden title bar still receives system-level window drags on some macOS versions.
+            window?.isMovable = false
         }
 
         override var mouseDownCanMoveWindow: Bool { false }
+        override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
 
         override func mouseDown(with event: NSEvent) {
-            window?.performDrag(with: event)
+            guard let window, !window.styleMask.contains(.fullScreen) else { return }
+            start = (window.convertPoint(toScreen: event.locationInWindow), window.frame.origin)
+        }
+
+        override func mouseDragged(with event: NSEvent) {
+            guard let start, let window else { return }
+            let pointer = window.convertPoint(toScreen: event.locationInWindow)
+            window.setFrameOrigin(CGPoint(x: start.origin.x + pointer.x - start.pointer.x,
+                                          y: start.origin.y + pointer.y - start.pointer.y))
+        }
+
+        override func mouseUp(with event: NSEvent) {
+            start = nil
         }
     }
 }

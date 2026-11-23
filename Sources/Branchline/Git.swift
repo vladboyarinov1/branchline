@@ -54,7 +54,6 @@ struct GitCommit: Identifiable, Hashable, Sendable {
     let shortHash: String
     let parents: [String]
     let author: String
-    let email: String
     let date: Date
     let subject: String
 
@@ -63,9 +62,9 @@ struct GitCommit: Identifiable, Hashable, Sendable {
 
 struct GitCommitDetail: Sendable {
     let commit: GitCommit
+    let email: String
     let message: String
     let files: [GitFile]
-    var email: String { commit.email }
 }
 
 enum GitPatchContext: Hashable, Sendable {
@@ -160,7 +159,7 @@ struct Git: Sendable {
     let root: URL
 
     static let patchLimit = 1_048_576
-    private static let commitFormat = "%H%x00%h%x00%P%x00%aN%x00%at%x00%s%x00%aE"
+    private static let commitFormat = "%H%x00%h%x00%P%x00%aN%x00%at%x00%s"
     private static let diffOptions = ["--no-ext-diff", "--no-textconv", "--color=never", "-M", "--submodule=short"]
 
     static func discover(_ directory: URL) async throws -> Git {
@@ -310,15 +309,15 @@ struct Git: Sendable {
 
     func details(_ hash: String) async throws -> GitCommitDetail {
         async let header = read([
-            "show", "--no-patch", "--no-show-signature", "-z", "--format=\(Self.commitFormat)%x00%B",
+            "show", "--no-patch", "--no-show-signature", "-z", "--format=\(Self.commitFormat)%x00%aE%x00%B",
             "--end-of-options", hash, "--",
         ])
         async let changes = read(["show", "--diff-merges=first-parent", "--format=", "--name-status", "-z"]
             + Self.diffOptions + ["--end-of-options", hash, "--"])
         let values = try await (header, changes)
         let fields = Self.fields(values.0.data)
-        guard fields.count == 8, let commit = Self.parseCommit(fields[0..<7]) else { throw GitError.invalidResponse }
-        return GitCommitDetail(commit: commit, message: fields[7], files: try Self.parseChanges(values.1.data))
+        guard fields.count == 8, let commit = Self.parseCommit(fields[0..<6]) else { throw GitError.invalidResponse }
+        return GitCommitDetail(commit: commit, email: fields[6], message: fields[7], files: try Self.parseChanges(values.1.data))
     }
 
     func compare(_ ref: GitRef) async throws -> [GitFile] {
@@ -627,7 +626,7 @@ struct Git: Sendable {
         let untrackedFiles = try Self.parseChanges(untracked.data).map { file in
             GitFile(path: file.path, staged: .untracked, previewRevision: untrackedRevision)
         }
-        return GitCommitDetail(commit: stored.commit, message: stored.message, files: stored.files + untrackedFiles)
+        return GitCommitDetail(commit: stored.commit, email: stored.email, message: stored.message, files: stored.files + untrackedFiles)
     }
 
     func stash(_ message: String = "") async throws {
@@ -704,9 +703,9 @@ struct Git: Sendable {
 
     private static func commits(_ data: Data) throws -> [GitCommit] {
         let fields = fields(data)
-        guard fields.count.isMultiple(of: 7) else { throw GitError.invalidResponse }
-        return try stride(from: 0, to: fields.count, by: 7).map { index in
-            guard let commit = parseCommit(fields[index..<index + 7]) else { throw GitError.invalidResponse }
+        guard fields.count.isMultiple(of: 6) else { throw GitError.invalidResponse }
+        return try stride(from: 0, to: fields.count, by: 6).map { index in
+            guard let commit = parseCommit(fields[index..<index + 6]) else { throw GitError.invalidResponse }
             return commit
         }
     }
@@ -716,8 +715,7 @@ struct Git: Sendable {
         guard let seconds = TimeInterval(fields[start + 4]) else { return nil }
         return GitCommit(hash: fields[start], shortHash: fields[start + 1],
                          parents: fields[start + 2].split(separator: " ").map(String.init),
-                         author: fields[start + 3], email: fields[start + 6],
-                         date: Date(timeIntervalSince1970: seconds), subject: fields[start + 5])
+                         author: fields[start + 3], date: Date(timeIntervalSince1970: seconds), subject: fields[start + 5])
     }
 
     private static func parseChanges(_ data: Data) throws -> [GitFile] {
