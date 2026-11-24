@@ -41,7 +41,6 @@ struct DiffView: View {
 
     @AppStorage("branchline.diff.layout") private var mode: DiffLayout = .split
     @AppStorage(DiffView.syntaxHighlightingKey) private var highlightsSyntax = true
-    @Environment(\.colorScheme) private var colorScheme
     @State private var preview: DiffPreview?
     @State private var activeHunk = 0
     @State private var jump: DiffJump?
@@ -67,7 +66,7 @@ struct DiffView: View {
     }
 
     var body: some View {
-        let colors = DiffColors(dark: colorScheme == .dark)
+        let colors = DiffColors.islandsDark
         let target = DiffPreviewTarget(focus: focus, oldLabel: oldLabel, newLabel: newLabel)
         let current = preview?.target.key == target.key
         let pending = !current && error == nil
@@ -130,7 +129,7 @@ struct DiffView: View {
                 }
             }
         }
-        .foregroundStyle(colorScheme == .dark ? Color(nsColor: colors.text) : .primary)
+        .foregroundStyle(Color(nsColor: colors.text))
         .background(Color(nsColor: colors.canvas))
         .background {
             DiffShortcutHost { command in
@@ -389,7 +388,6 @@ struct ProjectFilePreview: View {
     let path: String
     let revision: UInt
     @AppStorage(DiffView.syntaxHighlightingKey) private var highlightsSyntax = true
-    @Environment(\.colorScheme) private var colorScheme
     @State private var loaded: Loaded?
     @State private var discard: InlineFileBuffer?
 
@@ -418,7 +416,7 @@ struct ProjectFilePreview: View {
     }
 
     var body: some View {
-        let colors = DiffColors(dark: colorScheme == .dark)
+        let colors = DiffColors.islandsDark
         let shownPath = loaded?.path ?? path
         let syntax = highlightsSyntax ? DiffSyntax(path: shownPath) : nil
         let request = Request(path: path, revision: revision)
@@ -459,7 +457,7 @@ struct ProjectFilePreview: View {
             }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
-        .foregroundStyle(colorScheme == .dark ? Color(nsColor: colors.text) : .primary)
+        .foregroundStyle(Color(nsColor: colors.text))
         .background(Color(nsColor: colors.canvas))
         .task(id: request) {
             await model.previewCache.load(model: model, path: request.path, revision: request.revision)
@@ -804,7 +802,7 @@ private struct DiffSplitHandle: NSViewRepresentable {
 private final class DiffSplitHandleView: NSView {
     private var position: CGFloat = 0
     private var geometry = DiffSplitGeometry(width: 0)
-    private var colors = DiffColors(dark: true)
+    private var colors = DiffColors.islandsDark
     private var move: ((CGFloat, Bool) -> Void)?
     private var dragStart: (pointer: CGFloat, position: CGFloat)?
     private var hasDragged = false
@@ -1385,34 +1383,48 @@ private struct DiffDocument: Sendable {
 }
 
 private struct DiffColors: Equatable {
-    let dark: Bool
+    static let islandsDark = DiffColors()
 
-    var canvas: NSColor { dark ? NSColor(Palette.base) : rgb(0xFFFFFF) }
-    var chrome: NSColor { dark ? NSColor(Palette.panel) : rgb(0xEEF2F4) }
-    var separator: NSColor { dark ? NSColor(Palette.stroke) : rgb(0xC8D3D9) }
-    var text: NSColor { dark ? NSColor(Palette.text) : rgb(0x273640) }
-    var muted: NSColor { dark ? NSColor(Palette.muted) : rgb(0x51636D) }
-    var addedInk: NSColor { dark ? NSColor(Palette.green) : rgb(0x13563C) }
-    var removedInk: NSColor { dark ? NSColor(Palette.red) : rgb(0x822B40) }
+    let canvas = NSColor(Palette.base)
+    let chrome = NSColor(Palette.control)
+    let separator = NSColor(Palette.stroke)
+    let text = NSColor(Color(hex: 0xBCBEC4))
+    let muted = NSColor(Palette.muted)
+
+    private let selected = NSColor(Palette.selection)
+    private let selectedMuted = NSColor(Palette.selectionMuted)
+    let addedInk = NSColor(Palette.green)
+    let removedInk = NSColor(Palette.red)
+
+    private let addedLine = NSColor(Color(hex: 0x192C20))
+    private let removedLine = NSColor(Color(hex: 0x3F1E21))
+    private let addedGutter = NSColor(Color(hex: 0x203B2A))
+    private let removedGutter = NSColor(Color(hex: 0x56272B))
+    private let addedHighlight = NSColor(Color(hex: 0x4E9D6C).opacity(0.08))
+    private let removedHighlight = NSColor(Color(hex: 0xE4656E).opacity(0.08))
+
+    private let keyword = NSColor(Color(hex: 0xCF8E6D))
+    private let string = NSColor(Color(hex: 0x6AAB73))
+    private let number = NSColor(Color(hex: 0x2AACB8))
+    private let property = NSColor(Palette.pink)
+    private let type = NSColor(Color(hex: 0x9C9CFF))
+    private let tag = NSColor(Color(hex: 0xD5B778))
 
     func background(_ kind: DiffLineKind?) -> NSColor {
-        // Primer Dark Default diffBlob line tokens, composited for opaque AppKit cells.
         switch kind {
-        case .addition: dark ? overlay(0x2EA04326, over: canvas) : rgb(0xDBF1E5)
-        case .deletion: dark ? overlay(0xF851491A, over: canvas) : rgb(0xF8E2E7)
-        case .hunk: dark ? overlay(0x388BFD1A, over: canvas) : rgb(0xE3EBF5)
-        case .metadata: chrome
-        case .none: dark ? chrome : rgb(0xF4F7F8)
+        case .addition: addedLine
+        case .deletion: removedLine
+        case .hunk: selectedMuted
+        case .metadata, .none: chrome
         default: canvas
         }
     }
 
     func gutterBackground(_ kind: DiffLineKind) -> NSColor? {
-        guard dark else { return nil }
         switch kind {
-        case .addition: return overlay(0x3FB9504D, over: canvas)
-        case .deletion: return overlay(0xF851494D, over: canvas)
-        default: return nil
+        case .addition: addedGutter
+        case .deletion: removedGutter
+        default: nil
         }
     }
 
@@ -1420,47 +1432,28 @@ private struct DiffColors: Equatable {
         switch kind {
         case .addition: addedInk
         case .deletion: removedInk
-        case .hunk: dark ? muted : rgb(0x2C526D)
         default: muted
         }
     }
 
     func syntaxInk(_ kind: DiffSyntax.Kind) -> NSColor {
         switch kind {
-        case .keyword: dark ? rgb(0xFFB3B1) : rgb(0xA40E26)
-        case .string: dark ? rgb(0xA5D6FF) : rgb(0x0A3069)
-        case .number, .property: dark ? rgb(0xA1D0FF) : rgb(0x04499E)
-        case .comment: dark ? rgb(0xC2CAD3) : rgb(0x45535F)
-        case .type: dark ? rgb(0xDAB8FF) : rgb(0x5D30AC)
-        case .tag: dark ? rgb(0x91EB9D) : rgb(0x0F5A24)
+        case .keyword: keyword
+        case .string: string
+        case .number: number
+        case .property: property
+        case .comment: muted
+        case .type: type
+        case .tag: tag
         }
     }
 
     func changeHighlight(_ kind: DiffLineKind) -> NSColor {
-        if dark {
-            return rgb(kind == .addition ? 0x2EA043 : 0xF85149, alpha: 0.26)
-        }
-        return rgb(kind == .addition ? 0xA9DCC1 : 0xEDB7C4)
+        kind == .addition ? addedHighlight : removedHighlight
     }
 
     func selectedBackground(over base: NSColor, focused: Bool) -> NSColor {
-        if dark { return overlay(focused ? 0x388BFD47 : 0x388BFD1A, over: base) }
-        return base.blended(withFraction: focused ? 0.34 : 0.18, of: rgb(0x79ABAC)) ?? base
-    }
-
-    private func overlay(_ rgba: UInt32, over base: NSColor) -> NSColor {
-        guard let base = base.usingColorSpace(.sRGB) else { return base }
-        let alpha = CGFloat(rgba & 255) / 255
-        let foreground = rgb(rgba >> 8)
-        return NSColor(srgbRed: foreground.redComponent * alpha + base.redComponent * (1 - alpha),
-                       green: foreground.greenComponent * alpha + base.greenComponent * (1 - alpha),
-                       blue: foreground.blueComponent * alpha + base.blueComponent * (1 - alpha), alpha: 1)
-    }
-
-    private func rgb(_ value: UInt32, alpha: CGFloat = 1) -> NSColor {
-        return NSColor(srgbRed: CGFloat((value >> 16) & 255) / 255,
-                       green: CGFloat((value >> 8) & 255) / 255,
-                       blue: CGFloat(value & 255) / 255, alpha: alpha)
+        base.blended(withFraction: focused ? 0.20 : 0.12, of: selected) ?? base
     }
 }
 
@@ -1518,7 +1511,7 @@ private final class DiffSurfaceView: NSView, NSTableViewDataSource, NSTableViewD
     private var previewKey: DiffPreviewKey?
     private var mode = DiffLayout.split
     private var splitLeftWidth: CGFloat?
-    private var colors = DiffColors(dark: true)
+    private var colors = DiffColors.islandsDark
     private var syntax: DiffSyntax?
     private var performedJump: UUID?
     private var syncing = false
@@ -1902,7 +1895,7 @@ private final class DiffCellView: NSView {
     private var mode = DiffLayout.split
     private var isRight = false
     private var numberDigits = 3
-    private var colors = DiffColors(dark: true)
+    private var colors = DiffColors.islandsDark
     private var syntax: DiffSyntax?
     private var source: Source?
 

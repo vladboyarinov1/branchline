@@ -2,7 +2,7 @@
 
 Нативный Git-клиент для macOS 14 и новее. Универсальная сборка работает на Apple Silicon и Intel.
 
-Тёмное оформление использует цвета GitHub Dark Default из [Primer](https://github.com/primer/primitives), версия 11.10.0.
+Тёмное оформление и подсветка кода используют палитру Islands Dark из IDE JetBrains.
 
 ## Начало работы
 

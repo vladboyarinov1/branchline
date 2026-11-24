@@ -397,11 +397,10 @@ private struct HistoryColumns: Equatable {
 }
 
 private enum HistoryColors {
-    // Primer Dark Default uses tinted backgrounds for labels and palette hues for data graphics.
-    static let neutralLabel = Color(hex: 0x656C76, opacity: 51.0 / 255)
+    static let neutralLabel = Palette.controlPressed
     static let tagLabel = Palette.lavender.opacity(38.0 / 255)
     static let branch: [Color] = [
-        Palette.green, Palette.blue, Palette.yellow, Palette.lavender, Palette.red, Color(hex: 0xF778BA)
+        Palette.green, Palette.blue, Palette.yellow, Palette.lavender, Palette.red, Palette.pink
     ]
 }
 

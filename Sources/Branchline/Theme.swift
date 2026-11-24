@@ -1,37 +1,39 @@
 import SwiftUI
 
 enum Palette {
-    // GitHub Dark Default values from @primer/primitives 11.10.0.
-    static let base = Color(hex: 0x0D1117)
-    static let workbench = Color(hex: 0x010409)
-    static let panel = Color(hex: 0x151B23)
-    static let rail = Color(hex: 0x0D1117)
-    static let header = Color(hex: 0x151B23)
-    static let control = Color(hex: 0x212830)
-    static let controlPressed = Color(hex: 0x2A313C)
-    static let stroke = Color(hex: 0x3D444D)
-    static let separator = stroke.opacity(0.70)
-    static let text = Color(hex: 0xF0F6FC)
-    static let muted = Color(hex: 0x9198A1)
-    static let disabled = Color(hex: 0x656C76)
-    static let accent = Color(hex: 0x4493F8)
-    static let accentBorder = Color(hex: 0x1F6FEB)
-    static let selection = Color(hex: 0x388BFD, opacity: 26.0 / 255)
-    static let primaryButton = Color(hex: 0x238636)
-    static let primaryPressed = Color(hex: 0x2E9A40)
-    static let primaryDisabled = Color(hex: 0x105823)
+    // Surface and accent colors from the Islands Dark theme.
+    static let base = Color(hex: 0x191A1C)
+    static let workbench = Color(hex: 0x26282C)
+    static let panel = base
+    static let rail = panel
+    static let header = workbench
+    static let control = Color(hex: 0x212326)
+    static let controlPressed = Color(hex: 0x33353B)
+    static let stroke = Color(hex: 0x40434A)
+    static let separator = workbench
+    static let text = Color(hex: 0xD1D3D9)
+    static let muted = Color(hex: 0x9FA2A8)
+    static let disabled = Color(hex: 0x73767C)
+    static let accent = Color(hex: 0x92B7FF)
+    static let accentBorder = Color(hex: 0x538AF9)
+    static let selection = Color(hex: 0x2A4371)
+    static let selectionMuted = Color(hex: 0x233558)
+    static let primaryButton = Color(hex: 0x3871E1)
+    static let primaryPressed = Color(hex: 0x2F5EB9)
+    static let primaryDisabled = selectionMuted
     static let onPrimary = Color.white
-    static let green = Color(hex: 0x3FB950)
-    static let blue = Color(hex: 0x79C0FF)
-    static let red = Color(hex: 0xF85149)
-    static let yellow = Color(hex: 0xD29922)
-    static let lavender = Color(hex: 0xAB7DF8)
+    static let green = Color(hex: 0x8EC39D)
+    static let blue = accent
+    static let red = Color(hex: 0xFF9B9F)
+    static let yellow = Color(hex: 0xF5D273)
+    static let lavender = Color(hex: 0xB589EC)
+    static let pink = Color(hex: 0xCF84CF)
 }
 
 extension Color {
-    init(hex: UInt32, opacity: Double = 1) {
+    init(hex: UInt32) {
         self.init(.sRGB, red: Double((hex >> 16) & 255) / 255, green: Double((hex >> 8) & 255) / 255,
-                  blue: Double(hex & 255) / 255, opacity: opacity)
+                  blue: Double(hex & 255) / 255)
     }
 }
 
