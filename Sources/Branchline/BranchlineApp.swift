@@ -40,9 +40,15 @@ struct BranchlineApp: App {
             CommandMenu("Git") {
                 gitCommand("Commit…", action: .commit, shortcut: GitKeymap.commit)
                 gitCommand("Commit and Push…", action: .commitAndPush, shortcut: GitKeymap.commitAndPush)
-                gitCommand("Push…", action: .push, shortcut: GitKeymap.push)
-                if desk.active?.fetchState == .running {
-                    Button("Cancel Fetch") { desk.active?.cancelFetch() }
+                if desk.active?.networkOperation == .push {
+                    Button("Cancel Push") { desk.active?.cancelNetworkOperation(.push) }
+                        .disabled(desk.active?.canCancel(.push) != true)
+                } else {
+                    gitCommand("Push…", action: .push, shortcut: GitKeymap.push)
+                }
+                if desk.active?.networkOperation == .fetch {
+                    Button("Cancel Fetch") { desk.active?.cancelNetworkOperation(.fetch) }
+                        .disabled(desk.active?.canCancel(.fetch) != true)
                 } else {
                     Button("Fetch") { desk.active?.fetch() }.disabled(desk.active == nil || desk.active?.activity != nil)
                 }

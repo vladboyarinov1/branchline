@@ -939,7 +939,7 @@ private final class GitProcess: @unchecked Sendable {
     private let lock = NSLock()
     private var process: Process?
     private var cancelled = false
-    private var fetchGroup: pid_t?
+    private var networkGroup: pid_t?
     private var stderr = Data()
 
     private static let queue = DispatchQueue(label: "Branchline.Git.Process", qos: .userInitiated, attributes: .concurrent)
@@ -1006,14 +1006,14 @@ private final class GitProcess: @unchecked Sendable {
             try process.run()
             self.process = process
             let pid = process.processIdentifier
-            if arguments.first == "fetch", pid > 0, getpgid(pid) == pid {
-                fetchGroup = pid
+            if arguments.first == "fetch" || arguments.first == "push", pid > 0, getpgid(pid) == pid {
+                networkGroup = pid
             }
         }
         defer {
             lock.withLock {
                 self.process = nil
-                fetchGroup = nil
+                networkGroup = nil
             }
         }
 
@@ -1040,7 +1040,7 @@ private final class GitProcess: @unchecked Sendable {
         lock.withLock {
             guard !cancelled else { return }
             cancelled = true
-            guard let group = fetchGroup else {
+            guard let group = networkGroup else {
                 terminateProcess()
                 return
             }
@@ -1048,7 +1048,7 @@ private final class GitProcess: @unchecked Sendable {
             kill(-group, SIGTERM)
             Self.queue.asyncAfter(deadline: .now() + .milliseconds(500)) { [self] in
                 lock.withLock {
-                    if fetchGroup == group { kill(-group, SIGKILL) }
+                    if networkGroup == group { kill(-group, SIGKILL) }
                 }
             }
         }

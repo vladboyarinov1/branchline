@@ -132,8 +132,13 @@ final class Workspace {
     private(set) var notice: GitNotice?
     private(set) var feedback: String?
     private(set) var activity: String?
-    private(set) var fetchState: FetchState?
-    enum FetchState { case running, cancelling }
+    enum NetworkOperation: String {
+        case fetch = "Fetch"
+        case push = "Push"
+    }
+
+    private(set) var networkOperation: NetworkOperation?
+    private(set) var isCancellingNetworkOperation = false
     private(set) var isUpdatingIndex = false
     private(set) var hasWorkingStatus = false
     private(set) var isHistoryLoading = false
@@ -163,7 +168,7 @@ final class Workspace {
     @ObservationIgnored private var gitDirectory: URL?
     @ObservationIgnored private var commonGitDirectory: URL?
     @ObservationIgnored private var draftKey: String?
-    @ObservationIgnored private var fetchTask: Task<Void, Error>?
+    @ObservationIgnored private var networkTask: Task<Void, Error>?
     @ObservationIgnored private var extrasTask: Task<Void, Never>?
     @ObservationIgnored private var restoreHistoryCount = 0
     @ObservationIgnored private var historyOffset = 0
@@ -1118,24 +1123,9 @@ final class Workspace {
     }
 
     func fetch() {
-        guard let git, activity == nil else { return }
-        let task = Task { try await git.fetch() }
-        fetchTask = task
-        fetchState = .running
-        perform("Получаем коммиты", success: "Fetch завершён", cancellationFeedback: "Fetch отменён") { _ in
-            defer {
-                self.fetchTask = nil
-                self.fetchState = nil
-            }
-            try await task.value
-        }
+        performNetwork(.fetch, label: "Получаем коммиты") { try await $0.fetch() }
     }
 
-    func cancelFetch() {
-        guard fetchState == .running else { return }
-        fetchState = .cancelling
-        fetchTask?.cancel()
-    }
     func updateFromUpstream() {
         guard let branch = status?.branch, canUpdateFromUpstream else { return }
         perform("Обновляем ветку", success: "Ветка обновлена", conflictOperation: .merge) {
@@ -1143,7 +1133,34 @@ final class Workspace {
         }
     }
     func push(_ preview: GitPushPreview) {
-        perform("Отправляем коммиты", success: "Push завершён") { try await $0.push(preview) }
+        performNetwork(.push, label: "Отправляем коммиты") { try await $0.push(preview) }
+    }
+
+    func canCancel(_ operation: NetworkOperation) -> Bool {
+        networkOperation == operation && !isCancellingNetworkOperation
+    }
+
+    func cancelNetworkOperation(_ operation: NetworkOperation) {
+        guard canCancel(operation) else { return }
+        isCancellingNetworkOperation = true
+        networkTask?.cancel()
+    }
+
+    private func performNetwork(_ operation: NetworkOperation, label: String,
+                                action: @escaping (Git) async throws -> Void) {
+        guard let git, activity == nil else { return }
+        let task = Task { try await action(git) }
+        networkTask = task
+        networkOperation = operation
+        perform(label, success: "\(operation.rawValue) завершён",
+                cancellationFeedback: "\(operation.rawValue) отменён") { _ in
+            defer {
+                self.networkTask = nil
+                self.networkOperation = nil
+                self.isCancellingNetworkOperation = false
+            }
+            try await task.value
+        }
     }
 
     func reset(to hash: String, mode: GitResetMode, branch: String, head: String) {

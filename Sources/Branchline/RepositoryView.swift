@@ -379,7 +379,11 @@ struct RepositoryView<ProjectTabs: View>: View {
         let ahead = workspace.status?.ahead ?? 0
         let behind = workspace.status?.behind ?? 0
         let tracking = GitTracking(ahead: ahead, behind: behind)
-        let progress = workspace.isUpdatingIndex ? nil : (workspace.activity ?? (loadingRemotes ? "Читаем список remote" : nil))
+        let runningFetch = workspace.networkOperation == .fetch
+        let runningPush = workspace.networkOperation == .push
+        let cancelling = workspace.isCancellingNetworkOperation ? workspace.networkOperation?.rawValue : nil
+        let progress = workspace.isUpdatingIndex ? nil
+            : (cancelling.map { "Отменяем \($0)" } ?? workspace.activity ?? (loadingRemotes ? "Читаем список remote" : nil))
         return HStack(spacing: 7) {
             projectTabs
                 .padding(.leading, 78)
@@ -419,19 +423,19 @@ struct RepositoryView<ProjectTabs: View>: View {
             .accessibilityLabel("Git Branches, \(workspace.branch)")
             .accessibilityValue(tracking.accessibilitySummary)
             Button {
-                if workspace.fetchState == .running { workspace.cancelFetch() }
+                if runningFetch { workspace.cancelNetworkOperation(.fetch) }
                 else { workspace.fetch() }
             } label: {
                 HStack(spacing: 5) {
-                    Image(systemName: workspace.fetchState == nil ? "tray.and.arrow.down" : "xmark")
+                    Image(systemName: runningFetch ? "xmark" : "tray.and.arrow.down")
                         .frame(width: 14)
                     Text("Fetch")
                 }
             }
             .buttonStyle(StudioButton(kind: .quiet))
-            .disabled(workspace.activity != nil && workspace.fetchState != .running)
-            .accessibilityLabel(workspace.fetchState == nil ? "Fetch" : "Отменить Fetch")
-            .workbenchHint(workspace.fetchState == nil ? "Fetch · Получить сведения с сервера" : "Отменить Fetch")
+            .disabled(workspace.activity != nil && !workspace.canCancel(.fetch))
+            .accessibilityLabel(runningFetch ? "Отменить Fetch" : "Fetch")
+            .workbenchHint(runningFetch ? "Отменить Fetch" : "Fetch · Получить сведения с сервера")
             Button { workspace.updateFromUpstream() } label: {
                 Image(systemName: "arrow.down.to.line").frame(width: 14)
             }
@@ -442,14 +446,22 @@ struct RepositoryView<ProjectTabs: View>: View {
             .workbenchHint(behind > 0 ? "Update Project · Применить входящие коммиты: \(behind)"
                            : "Update Project · Нет полученных коммитов для обновления",
                            shortcut: GitKeymap.update)
-            Button(action: preparePush) {
+            Button {
+                if runningPush { workspace.cancelNetworkOperation(.push) }
+                else { preparePush() }
+            } label: {
                 Text("Push")
+                    .opacity(runningPush ? 0 : 1)
+                    .overlay {
+                        if runningPush { Image(systemName: "xmark").accessibilityHidden(true) }
+                    }
             }
             .buttonStyle(StudioButton(keepsEnabledAppearance: workspace.isUpdatingIndex && canPushWhenIdle))
-            .accessibilityLabel("Push")
-            .accessibilityValue(ahead > 0 ? "Коммитов к отправке: \(ahead)" : "")
-            .disabled(!canPush)
-            .workbenchHint(ahead > 0 ? "Push · Коммитов к отправке: \(ahead)" : "Push", shortcut: GitKeymap.push)
+            .accessibilityLabel(runningPush ? "Отменить Push" : "Push")
+            .accessibilityValue(!runningPush && ahead > 0 ? "Коммитов к отправке: \(ahead)" : "")
+            .disabled(runningPush ? !workspace.canCancel(.push) : !canPush)
+            .workbenchHint(runningPush ? "Отменить Push" : (ahead > 0 ? "Push · Коммитов к отправке: \(ahead)" : "Push"),
+                           shortcut: runningPush ? nil : GitKeymap.push)
         }
         .font(.system(size: 11, weight: .medium))
         .padding(.trailing, 9)
