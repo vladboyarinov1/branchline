@@ -129,7 +129,7 @@ struct HistoryView: View {
         return Button(action: action) {
             Image(systemName: "sidebar.left")
                 .font(.system(size: 13, weight: .medium))
-                .foregroundStyle(branchesVisible ? Palette.text : Palette.muted)
+                .foregroundStyle(branchesVisible ? Palette.activeIcon : Palette.icon)
         }
         .buttonStyle(StudioButton(kind: .quiet))
         .background(branchesVisible ? Palette.selection : .clear, in: RoundedRectangle(cornerRadius: 6))
@@ -408,7 +408,8 @@ private enum HistoryColors {
     static let neutralLabel = Palette.control
     static let tagLabel = Palette.lavender.opacity(38.0 / 255)
     static let branch: [Color] = [
-        Palette.green, Palette.blue, Palette.yellow, Palette.lavender, Palette.red, Palette.pink
+        Palette.gitOutgoing, Palette.gitIncoming, Color(hex: 0xDCAC4F),
+        Color(hex: 0xAE7FF5), Color(hex: 0xF56E65), Color(hex: 0xE373B1)
     ]
 }
 
@@ -688,10 +689,10 @@ private struct HistoryGraphCell: View {
         Canvas { context, size in
             guard let row else { return }
             let middle = size.height / 2
-            let laneWidth: CGFloat = 1.5
+            let laneWidth: CGFloat = 2
             let syncColor: Color? = switch syncDirection {
-            case .outgoing: Palette.green
-            case .incoming: Palette.blue
+            case .outgoing: Palette.gitOutgoing
+            case .incoming: Palette.gitIncoming
             case nil: nil
             }
             let stroke = StrokeStyle(lineWidth: laneWidth, dash: syncColor == nil ? [] : [2.5, 2.5])

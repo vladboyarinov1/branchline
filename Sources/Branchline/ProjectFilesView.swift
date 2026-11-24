@@ -308,7 +308,7 @@ struct ProjectFilesView: View {
                         .frame(width: 25, height: 23)
                         .contentShape(Rectangle())
                 }
-                .buttonStyle(.borderless)
+                .buttonStyle(WorkbenchIconButton())
                 .accessibilityLabel("Обновить файлы проекта")
                 .workbenchHint("Обновить файлы проекта")
             }
@@ -409,18 +409,11 @@ struct ProjectFilesView: View {
             }
             .padding(.leading, 4 + CGFloat(row.depth) * 13)
             .padding(.trailing, 4)
-            .frame(height: 24)
+            .frame(height: WorkbenchLayout.fileRowHeight)
             .contentShape(Rectangle())
         }
         .buttonStyle(WorkbenchPlainButton())
         .workbenchRowBackground(selected: selected)
-        .overlay {
-            if selected && treeFocused {
-                RoundedRectangle(cornerRadius: 4)
-                    .strokeBorder(Palette.focusBorder, lineWidth: 1)
-                    .allowsHitTesting(false)
-            }
-        }
         .accessibilityLabel(entry.name)
         .accessibilityAddTraits(selected ? .isSelected : [])
         .accessibilityValue(isFolder ? (isExpanded ? "Папка развёрнута" : "Папка свёрнута") : "")

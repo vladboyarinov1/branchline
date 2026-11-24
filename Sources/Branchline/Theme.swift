@@ -12,6 +12,8 @@ enum Palette {
     static let stroke = Color(hex: 0x40434A)
     static let separator = workbench
     static let text = Color(hex: 0xD1D3D9)
+    static let icon = Color(hex: 0xBFC4CD)
+    static let activeIcon = Color(hex: 0x72A8FF)
     static let muted = Color(hex: 0x9FA2A8)
     static let disabled = Color(hex: 0x73767C)
     static let accent = Color(hex: 0x92B7FF)
@@ -24,6 +26,8 @@ enum Palette {
     static let onPrimary = Color.white
     static let green = Color(hex: 0x8EC39D)
     static let blue = accent
+    static let gitOutgoing = Color(hex: 0x58BF63)
+    static let gitIncoming = Color(hex: 0x5DAAF5)
     static let red = Color(hex: 0xFF9B9F)
     static let yellow = Color(hex: 0xF5D273)
     static let lavender = Color(hex: 0xB589EC)
@@ -40,6 +44,7 @@ extension Color {
 enum WorkbenchLayout {
     static let titleHeight: CGFloat = 38
     static let controlHeight: CGFloat = 30
+    static let fileRowHeight: CGFloat = 24
     static let toolStripWidth: CGFloat = 40
     static let gutter: CGFloat = 6
     // NSSplitView contributes a one-point divider between the two pane insets.
@@ -140,7 +145,7 @@ struct WorkbenchIconButton: ButtonStyle {
         let enabled = isEnabled || keepsEnabledAppearance
         return WorkbenchHover { hovering in
             configuration.label
-                .foregroundStyle(selected || hovering ? Palette.text : Palette.muted)
+                .foregroundStyle(selected ? Palette.activeIcon : (hovering ? Palette.text : Palette.icon))
                 .background(selected ? Palette.selection : (hovering ? Palette.hover : .clear),
                             in: RoundedRectangle(cornerRadius: 5))
                 .contentShape(Rectangle())

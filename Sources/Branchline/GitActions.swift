@@ -25,10 +25,10 @@ struct BranchSyncBadge: View {
     var body: some View {
         HStack(spacing: 5) {
             if tracking.ahead > 0 {
-                count(tracking.ahead, icon: "arrow.up.right", color: Palette.green)
+                count(tracking.ahead, icon: "arrow.up.right", color: Palette.gitOutgoing)
             }
             if tracking.behind > 0 {
-                count(tracking.behind, icon: "arrow.down.left", color: Palette.blue)
+                count(tracking.behind, icon: "arrow.down.left", color: Palette.gitIncoming)
             }
         }
         .fixedSize()

@@ -1,3 +1,4 @@
+import AppKit
 import Observation
 import SwiftUI
 
@@ -13,10 +14,6 @@ extension View {
     func workbenchHints() -> some View {
         modifier(WorkbenchHintHost())
     }
-}
-
-private enum WorkbenchHintSpace: Hashable {
-    case root
 }
 
 private struct WorkbenchHint: Equatable {
@@ -36,14 +33,12 @@ private struct PresentedWorkbenchHint {
 @MainActor @Observable
 private final class WorkbenchHintState {
     private(set) var shown: PresentedWorkbenchHint?
+    @ObservationIgnored weak var anchorView: NSView?
     @ObservationIgnored private var owner: UUID?
     @ObservationIgnored private var pendingHint: WorkbenchHint?
-    @ObservationIgnored private var point = CGPoint.zero
     @ObservationIgnored private var reveal: Task<Void, Never>?
 
-    func enter(_ id: UUID, hint: WorkbenchHint, at point: CGPoint) {
-        guard point.x.isFinite, point.y.isFinite else { return }
-        self.point = point
+    func enter(_ id: UUID, hint: WorkbenchHint) {
         if owner == id {
             update(id, hint: hint)
             return
@@ -55,8 +50,14 @@ private final class WorkbenchHintState {
         reveal = Task { [weak self] in
             try? await Task.sleep(for: .milliseconds(350))
             guard !Task.isCancelled, let self, owner == id, let pendingHint else { return }
-            shown = PresentedWorkbenchHint(hint: pendingHint, point: self.point)
             reveal = nil
+            guard let anchorView, let window = anchorView.window else { return }
+            let bounds = anchorView.bounds
+            let mouse = anchorView.convert(window.mouseLocationOutsideOfEventStream, from: nil)
+            guard bounds.contains(mouse) else { return }
+            let point = CGPoint(x: mouse.x - bounds.minX,
+                                y: anchorView.isFlipped ? mouse.y - bounds.minY : bounds.maxY - mouse.y)
+            shown = PresentedWorkbenchHint(hint: pendingHint, point: point)
         }
     }
 
@@ -92,14 +93,13 @@ private struct WorkbenchHintModifier: ViewModifier {
     func body(content: Content) -> some View {
         if let state {
             let tracked = content
-                .onContinuousHover(coordinateSpace: .named(WorkbenchHintSpace.root)) { phase in
-                    switch phase {
-                    case .active(let point):
+                .onHover { hovering in
+                    if hovering {
                         let activeID = id ?? UUID()
                         if id == nil { id = activeID }
-                        state.enter(activeID, hint: hint, at: point)
-                    case .ended:
-                        if let id { state.leave(id) }
+                        state.enter(activeID, hint: hint)
+                    } else if let id {
+                        state.leave(id)
                     }
                 }
                 .onChange(of: hint) { _, newHint in
@@ -134,7 +134,11 @@ private struct WorkbenchHintHost: ViewModifier {
     func body(content: Content) -> some View {
         content
             .environment(\.workbenchHintState, state)
-            .coordinateSpace(name: WorkbenchHintSpace.root)
+            .background {
+                WorkbenchHintAnchor(state: state)
+                    .accessibilityHidden(true)
+                    .allowsHitTesting(false)
+            }
             .overlay {
                 if let shown = state.shown {
                     WorkbenchHintPlacement(point: shown.point) {
@@ -149,6 +153,18 @@ private struct WorkbenchHintHost: ViewModifier {
             }
             .onDisappear { state.dismiss() }
     }
+}
+
+private struct WorkbenchHintAnchor: NSViewRepresentable {
+    let state: WorkbenchHintState
+
+    func makeNSView(context: Context) -> NSView {
+        let view = NSView()
+        state.anchorView = view
+        return view
+    }
+
+    func updateNSView(_ view: NSView, context: Context) {}
 }
 
 private struct WorkbenchHintPlacement: Layout {

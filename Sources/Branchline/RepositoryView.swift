@@ -352,7 +352,7 @@ struct RepositoryView<ProjectTabs: View>: View {
                     else { GitGlyph.branch.glyph(size: 12) }
                 }
                 .frame(width: 14)
-                .foregroundStyle(ref.isCurrent ? Palette.accent : Palette.muted)
+                .foregroundStyle(ref.isCurrent ? Palette.activeIcon : Palette.icon)
                 .accessibilityHidden(true)
                 Text(label ?? ref.name).lineLimit(1).truncationMode(.middle)
                 Spacer(minLength: 3)
@@ -418,7 +418,7 @@ struct RepositoryView<ProjectTabs: View>: View {
             NPMRunControl(workspace: workspace)
             Button { sheet = .branches } label: {
                 HStack(spacing: 5) {
-                    GitGlyph.branch.glyph(size: 14).foregroundStyle(Palette.accent)
+                    GitGlyph.branch.glyph(size: 14).foregroundStyle(Palette.activeIcon)
                     Text(workspace.branch.count > 22
                          ? String(workspace.branch.prefix(10)) + "…" + String(workspace.branch.suffix(11))
                          : workspace.branch)
@@ -431,6 +431,10 @@ struct RepositoryView<ProjectTabs: View>: View {
             .workbenchHint(workspace.status?.upstream.map { "Git Branches · \($0)" } ?? "Git Branches")
             .accessibilityLabel("Git Branches, \(workspace.branch)")
             .accessibilityValue(tracking.accessibilitySummary)
+            Rectangle()
+                .fill(Palette.stroke)
+                .frame(width: 1, height: 16)
+                .accessibilityHidden(true)
             Button {
                 if runningFetch { workspace.cancelNetworkOperation(.fetch) }
                 else { workspace.fetch() }
@@ -824,7 +828,7 @@ struct RepositoryView<ProjectTabs: View>: View {
                     Spacer(minLength: 0)
                 }
                 .padding(.leading, 4)
-                .frame(height: 26)
+                .frame(height: WorkbenchLayout.fileRowHeight)
                 .contentShape(Rectangle())
             }
             .buttonStyle(WorkbenchPlainButton())
@@ -833,13 +837,6 @@ struct RepositoryView<ProjectTabs: View>: View {
             .accessibilityAddTraits(selected ? .isSelected : [])
         }
         .workbenchRowBackground(selected: selected)
-        .overlay {
-            if selected && changesFocused && context.isWorkingFile {
-                RoundedRectangle(cornerRadius: 4)
-                    .strokeBorder(Palette.focusBorder, lineWidth: 1)
-                    .allowsHitTesting(false)
-            }
-        }
         .contextMenu {
             Button("Show Diff") {
                 workspace.preview(file, context)
