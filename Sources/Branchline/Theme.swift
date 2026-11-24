@@ -8,19 +8,19 @@ enum Palette {
     static let rail = panel
     static let header = workbench
     static let control = Color(hex: 0x212326)
-    static let controlPressed = Color(hex: 0x33353B)
+    static let hover = Color(hex: 0x2D3035)
     static let stroke = Color(hex: 0x40434A)
     static let separator = workbench
     static let text = Color(hex: 0xD1D3D9)
     static let muted = Color(hex: 0x9FA2A8)
     static let disabled = Color(hex: 0x73767C)
     static let accent = Color(hex: 0x92B7FF)
-    static let accentBorder = Color(hex: 0x538AF9)
-    static let selection = Color(hex: 0x2A4371)
-    static let selectionMuted = Color(hex: 0x233558)
-    static let primaryButton = Color(hex: 0x3871E1)
-    static let primaryPressed = Color(hex: 0x2F5EB9)
-    static let primaryDisabled = selectionMuted
+    static let focusBorder = Color(hex: 0x9FA2A8)
+    static let selection = Color(hex: 0x33353B)
+    static let selectionMuted = workbench
+    static let primaryButton = stroke
+    static let primaryHover = Color(hex: 0x4C4F56)
+    static let primaryDisabled = control
     static let onPrimary = Color.white
     static let green = Color(hex: 0x8EC39D)
     static let blue = accent
@@ -38,8 +38,12 @@ extension Color {
 }
 
 enum WorkbenchLayout {
-    static let titleHeight: CGFloat = 34
-    static let gutter: CGFloat = 8
+    static let titleHeight: CGFloat = 38
+    static let controlHeight: CGFloat = 30
+    static let toolStripWidth: CGFloat = 40
+    static let gutter: CGFloat = 6
+    // NSSplitView contributes a one-point divider between the two pane insets.
+    static let splitInset: CGFloat = (gutter - 1) / 2
     static let panelInset: CGFloat = 8
     static let panelHeaderHeight: CGFloat = 28
     static let radius: CGFloat = 9
@@ -103,36 +107,44 @@ enum GitGlyph: Shape {
     }
 }
 
+private struct WorkbenchHover<Content: View>: View {
+    @ViewBuilder let content: (Bool) -> Content
+    @Environment(\.isEnabled) private var isEnabled
+    @State private var hovering = false
+
+    var body: some View {
+        content(isEnabled && hovering)
+            .onHover { hovering = $0 }
+    }
+}
+
+struct WorkbenchPlainButton: ButtonStyle {
+    func makeBody(configuration: Configuration) -> some View { configuration.label }
+}
+
+extension View {
+    func workbenchRowBackground(selected: Bool = false, radius: CGFloat = 4) -> some View {
+        WorkbenchHover { hovering in
+            self.background(selected ? Palette.selection : (hovering ? Palette.hover : .clear),
+                            in: RoundedRectangle(cornerRadius: radius))
+        }
+    }
+}
+
 struct WorkbenchIconButton: ButtonStyle {
     var selected = false
     var keepsEnabledAppearance = false
     @Environment(\.isEnabled) private var isEnabled
 
     func makeBody(configuration: Configuration) -> some View {
-        Chrome(label: configuration.label, pressed: configuration.isPressed, selected: selected,
-               enabled: isEnabled || keepsEnabledAppearance)
-    }
-
-    private struct Chrome<Label: View>: View {
-        let label: Label
-        let pressed: Bool
-        let selected: Bool
-        let enabled: Bool
-        @State private var hovering = false
-
-        var body: some View {
-            label
-                .foregroundStyle(selected ? Palette.accent : (enabled && hovering ? Palette.text : Palette.muted))
-                .background(background, in: RoundedRectangle(cornerRadius: 5))
+        let enabled = isEnabled || keepsEnabledAppearance
+        return WorkbenchHover { hovering in
+            configuration.label
+                .foregroundStyle(selected || hovering ? Palette.text : Palette.muted)
+                .background(selected ? Palette.selection : (hovering ? Palette.hover : .clear),
+                            in: RoundedRectangle(cornerRadius: 5))
                 .contentShape(Rectangle())
                 .opacity(enabled ? 1 : 0.5)
-                .onHover { hovering = $0 }
-        }
-
-        private var background: Color {
-            if pressed { return Palette.controlPressed }
-            if selected { return Palette.selection }
-            return enabled && hovering ? Palette.control : .clear
         }
     }
 }
@@ -144,21 +156,21 @@ struct StudioButton: ButtonStyle {
     @Environment(\.isEnabled) private var isEnabled
 
     func makeBody(configuration: Configuration) -> some View {
-        configuration.label
-            .font(.system(size: 12, weight: .semibold))
-            .lineLimit(1)
-            .padding(.horizontal, kind == .quiet ? 8 : 11)
-            .frame(height: 30)
-            .foregroundStyle(foreground)
-            .background {
-                RoundedRectangle(cornerRadius: 6).fill(background(pressed: configuration.isPressed))
-            }
-            .overlay {
-                if kind == .regular {
-                    RoundedRectangle(cornerRadius: 6)
-                        .strokeBorder(appearsEnabled ? Palette.stroke : Palette.separator, lineWidth: 1)
+        WorkbenchHover { hovering in
+            configuration.label
+                .font(.system(size: 12, weight: .semibold))
+                .lineLimit(1)
+                .padding(.horizontal, kind == .quiet ? 8 : 11)
+                .frame(height: WorkbenchLayout.controlHeight)
+                .foregroundStyle(foreground)
+                .background(background(hovering: hovering), in: RoundedRectangle(cornerRadius: 6))
+                .overlay {
+                    if kind == .regular {
+                        RoundedRectangle(cornerRadius: 6)
+                            .strokeBorder(appearsEnabled ? Palette.stroke : Palette.separator, lineWidth: 1)
+                    }
                 }
-            }
+        }
     }
 
     private var appearsEnabled: Bool { isEnabled || keepsEnabledAppearance }
@@ -170,13 +182,13 @@ struct StudioButton: ButtonStyle {
         return appearsEnabled ? Palette.text : Palette.disabled
     }
 
-    private func background(pressed: Bool) -> Color {
+    private func background(hovering: Bool) -> Color {
         switch kind {
         case .primary:
             guard appearsEnabled else { return Palette.primaryDisabled }
-            return pressed ? Palette.primaryPressed : Palette.primaryButton
-        case .regular: return pressed ? Palette.controlPressed : Palette.control
-        case .quiet: return pressed ? Palette.selection : .clear
+            return hovering ? Palette.primaryHover : Palette.primaryButton
+        case .regular: return hovering ? Palette.hover : Palette.control
+        case .quiet: return hovering ? Palette.hover : .clear
         }
     }
 }

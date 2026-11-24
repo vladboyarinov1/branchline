@@ -9,7 +9,7 @@ struct CommitMessageEditor: View {
     @State private var isFocused = false
 
     private static let focusedStroke = Color(nsColor: NSColor(Palette.stroke)
-        .blended(withFraction: 0.55, of: NSColor(Palette.accentBorder)) ?? NSColor(Palette.accentBorder))
+        .blended(withFraction: 0.55, of: NSColor(Palette.focusBorder)) ?? NSColor(Palette.focusBorder))
 
     var body: some View {
         let boundary = RoundedRectangle(cornerRadius: 5)

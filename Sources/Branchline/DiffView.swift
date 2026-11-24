@@ -850,7 +850,7 @@ private final class DiffSplitHandleView: NSView {
 
     override func draw(_ dirtyRect: NSRect) {
         let focused = window?.firstResponder === self
-        (hovered || dragStart != nil || focused ? NSColor(Palette.accent) : colors.separator).setFill()
+        (hovered || focused ? NSColor(Palette.focusBorder) : colors.separator).setFill()
         NSRect(x: floor(bounds.midX), y: 0, width: DiffSplitGeometry.lineWidth, height: bounds.height).fill()
     }
 

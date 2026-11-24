@@ -412,12 +412,12 @@ struct ProjectFilesView: View {
             .frame(height: 24)
             .contentShape(Rectangle())
         }
-        .buttonStyle(.plain)
-        .background(selected ? Palette.selection : .clear, in: RoundedRectangle(cornerRadius: 4))
+        .buttonStyle(WorkbenchPlainButton())
+        .workbenchRowBackground(selected: selected)
         .overlay {
             if selected && treeFocused {
                 RoundedRectangle(cornerRadius: 4)
-                    .strokeBorder(Palette.accentBorder, lineWidth: 1)
+                    .strokeBorder(Palette.focusBorder, lineWidth: 1)
                     .allowsHitTesting(false)
             }
         }

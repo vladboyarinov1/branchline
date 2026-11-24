@@ -32,7 +32,7 @@ struct NameSheet: View {
                     .padding(.horizontal, 8)
                     .frame(height: 30)
                     .background(Palette.base, in: RoundedRectangle(cornerRadius: 6))
-                    .overlay { RoundedRectangle(cornerRadius: 6).strokeBorder(focused ? Palette.accentBorder : Palette.stroke) }
+                    .overlay { RoundedRectangle(cornerRadius: 6).strokeBorder(focused ? Palette.focusBorder : Palette.stroke) }
                     .focused($focused)
             }
             if showCheckout { Toggle("Переключиться на новую ветку", isOn: $checkout) }

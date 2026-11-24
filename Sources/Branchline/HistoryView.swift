@@ -129,9 +129,10 @@ struct HistoryView: View {
         return Button(action: action) {
             Image(systemName: "sidebar.left")
                 .font(.system(size: 13, weight: .medium))
-                .foregroundStyle(branchesVisible ? Palette.accent : Palette.muted)
+                .foregroundStyle(branchesVisible ? Palette.text : Palette.muted)
         }
         .buttonStyle(StudioButton(kind: .quiet))
+        .background(branchesVisible ? Palette.selection : .clear, in: RoundedRectangle(cornerRadius: 6))
         .workbenchHint(label)
         .accessibilityLabel(label)
     }
@@ -168,7 +169,7 @@ struct HistoryView: View {
                     .frame(width: 16, height: 22)
                     .contentShape(Rectangle())
             }
-            .buttonStyle(.plain)
+            .buttonStyle(WorkbenchPlainButton())
             .keyboardShortcut("f", modifiers: .command)
             .workbenchHint("Поиск коммитов", shortcut: GitKeymap.focusCommitSearch)
             .accessibilityLabel("Перейти к поиску коммитов")
@@ -201,7 +202,7 @@ struct HistoryView: View {
                             .font(.system(size: 12))
                             .frame(width: 20, height: 20)
                     }
-                    .buttonStyle(.plain)
+                    .buttonStyle(WorkbenchPlainButton())
                     .workbenchHint("Очистить поиск")
                     .accessibilityLabel("Очистить поиск")
                 }
@@ -386,18 +387,25 @@ private struct HistoryColumns: Equatable {
     let showsGraph: Bool
 
     var graphLanes = 1
-    var author: CGFloat = 140
+    var preferredAuthorWidth: CGFloat = 140
 
     var graph: CGFloat { showsGraph ? CGFloat(max(0, graphLanes - 1)) * 8 + 16 : 0 }
-    var layoutWidth: CGFloat {
-        max(width, graph + (graph > 0 ? Self.spacing : 0) + Self.inset * 2 + Self.spacing * 2 + 150 + author + date)
+    private var fixedWidth: CGFloat {
+        graph + (graph > 0 ? Self.spacing : 0) + Self.inset * 2 + Self.spacing * 2 + date
     }
+    var author: CGFloat { min(preferredAuthorWidth, max(60, floor((width - fixedWidth) * 0.3))) }
+    var layoutWidth: CGFloat { max(width, fixedWidth + author + 100) }
+    var message: CGFloat { layoutWidth - fixedWidth - author }
     var date: CGFloat { 91 }
-    var refCount: Int { layoutWidth >= 525 ? 2 : 1 }
+    var refCount: Int {
+        if message >= 250 { return 2 }
+        return message >= 140 ? 1 : 0
+    }
+    var refWidth: CGFloat { min(130, (message - 86) / CGFloat(max(1, refCount))) }
 }
 
 private enum HistoryColors {
-    static let neutralLabel = Palette.controlPressed
+    static let neutralLabel = Palette.control
     static let tagLabel = Palette.lavender.opacity(38.0 / 255)
     static let branch: [Color] = [
         Palette.green, Palette.blue, Palette.yellow, Palette.lavender, Palette.red, Palette.pink
@@ -415,6 +423,7 @@ private struct HistoryRow: View, Equatable {
     private static let dateWithYear = date.year(.twoDigits)
     private static let time = Date.FormatStyle(date: .omitted, time: .shortened, locale: locale)
     private static let timestamp = Date.FormatStyle(date: .long, time: .shortened, locale: locale)
+    private static let refFont = NSFont.systemFont(ofSize: 9.5, weight: .medium)
 
     private var subject: String { entry.subject.isEmpty ? "Без сообщения" : entry.subject }
 
@@ -426,6 +435,7 @@ private struct HistoryRow: View, Equatable {
                     .accessibilityHidden(true)
             }
             message
+                .frame(width: columns.message, alignment: .leading)
             Text(entry.author)
                 .font(.system(size: 11))
                 .lineLimit(1)
@@ -482,9 +492,8 @@ private struct HistoryRow: View, Equatable {
                 .font(.system(size: 12, weight: selected ? .semibold : .regular))
                 .foregroundStyle(Palette.text)
                 .lineLimit(1)
-                .layoutPriority(1)
 
-            if !entry.refs.isEmpty {
+            if columns.refCount > 0 && !entry.refs.isEmpty {
                 HStack(spacing: 3) {
                     ForEach(Array(entry.refs.prefix(columns.refCount).enumerated()), id: \.offset) { _, ref in
                         refBadge(ref)
@@ -496,18 +505,20 @@ private struct HistoryRow: View, Equatable {
                             .fixedSize()
                     }
                 }
+                .layoutPriority(1)
             }
         }
-        .frame(maxWidth: .infinity, alignment: .leading)
     }
 
     private func refBadge(_ ref: String) -> some View {
         let isHead = ref == "HEAD" || ref.hasPrefix("HEAD -> ")
         let isTag = ref.hasPrefix("tag: ")
-        let accent = isHead ? Palette.accent : (isTag ? Palette.lavender : Palette.muted)
+        let ink = isHead ? Palette.accent : (isTag ? Palette.lavender : Palette.text)
         let background = isHead ? Palette.selection : (isTag ? HistoryColors.tagLabel : HistoryColors.neutralLabel)
         let label = ref.hasPrefix("HEAD -> ") ? String(ref.dropFirst(8))
             : (isTag ? String(ref.dropFirst(5)) : ref)
+        let labelWidth = ceil((label as NSString).size(withAttributes: [.font: Self.refFont]).width)
+        let badgeWidth = min(columns.refWidth, labelWidth + (isTag ? 21 : 9))
         return HStack(spacing: 3) {
             if isTag {
                 Image(systemName: "tag")
@@ -520,7 +531,8 @@ private struct HistoryRow: View, Equatable {
             .font(.system(size: 9.5, weight: .medium))
             .padding(.horizontal, 4)
             .padding(.vertical, 1.5)
-            .foregroundStyle(selected ? Palette.text : accent)
+            .frame(width: badgeWidth)
+            .foregroundStyle(ink)
             .background(background, in: RoundedRectangle(cornerRadius: 3))
     }
 }
@@ -676,13 +688,13 @@ private struct HistoryGraphCell: View {
         Canvas { context, size in
             guard let row else { return }
             let middle = size.height / 2
-            let laneOpacity = 0.84
+            let laneWidth: CGFloat = 1.5
             let syncColor: Color? = switch syncDirection {
             case .outgoing: Palette.green
             case .incoming: Palette.blue
             case nil: nil
             }
-            let stroke = StrokeStyle(lineWidth: 1.3, dash: syncColor == nil ? [] : [2.5, 2.5])
+            let stroke = StrokeStyle(lineWidth: laneWidth, dash: syncColor == nil ? [] : [2.5, 2.5])
             func x(_ column: Int) -> CGFloat { CGFloat(column) * 8 + 8 }
 
             row.forEachThrough { lane, lineColor in
@@ -691,7 +703,7 @@ private struct HistoryGraphCell: View {
                     path.move(to: CGPoint(x: laneX, y: 0))
                     path.addLine(to: CGPoint(x: laneX, y: size.height))
                 }
-                context.stroke(path, with: .color(color(lineColor).opacity(laneOpacity)), lineWidth: 1.3)
+                context.stroke(path, with: .color(color(lineColor)), lineWidth: laneWidth)
             }
             let node = CGPoint(x: x(Int(row.column)), y: middle)
             if row.hasIncoming {
@@ -699,7 +711,7 @@ private struct HistoryGraphCell: View {
                     path.move(to: CGPoint(x: node.x, y: 0))
                     path.addLine(to: node)
                 }
-                context.stroke(path, with: .color((syncColor ?? color(row.color)).opacity(laneOpacity)), style: stroke)
+                context.stroke(path, with: .color(syncColor ?? color(row.color)), style: stroke)
             }
             row.forEachOutgoing { lane, lineColor in
                 let target = CGPoint(x: x(lane), y: size.height)
@@ -711,7 +723,7 @@ private struct HistoryGraphCell: View {
                         control2: CGPoint(x: target.x, y: middle + 6)
                     )
                 }
-                context.stroke(path, with: .color((syncColor ?? color(lineColor)).opacity(laneOpacity)), style: stroke)
+                context.stroke(path, with: .color(syncColor ?? color(lineColor)), style: stroke)
             }
             let diameter: CGFloat = row.hasMultipleOutgoing ? 7.5 : 6
             let dot = CGRect(
@@ -719,7 +731,7 @@ private struct HistoryGraphCell: View {
             )
             if selected {
                 let ring = Path(ellipseIn: dot.insetBy(dx: -2, dy: -2))
-                context.stroke(ring, with: .color((syncColor ?? color(row.color)).opacity(0.8)), lineWidth: 1)
+                context.stroke(ring, with: .color(syncColor ?? color(row.color)), lineWidth: 1)
             }
             let marker = Path(ellipseIn: dot)
             if let syncColor {
@@ -869,7 +881,7 @@ private struct ReusableHistoryTable: NSViewRepresentable {
             }
             self.source = source
             self.source.columns.graphLanes = graph.laneCount
-            self.source.columns.author = authorWidth
+            self.source.columns.preferredAuthorWidth = authorWidth
             let width = ceil(self.source.columns.layoutWidth)
             if let column = table.tableColumns.first, column.width != width || table.frame.width != width {
                 column.width = width

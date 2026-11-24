@@ -137,14 +137,14 @@ private struct MainWindow: View {
                         .frame(maxWidth: .infinity)
                 }
                 .padding(.leading, 78)
-                .padding(.trailing, 8)
+                .padding(.trailing, WorkbenchLayout.gutter)
                 .frame(height: WorkbenchLayout.titleHeight)
                 .background(Palette.header)
                 welcome
             }
         }
         .foregroundStyle(Palette.text)
-        .tint(Palette.accent)
+        .tint(Palette.focusBorder)
         .background(Palette.base)
         .ignoresSafeArea(.container, edges: .top)
         .workbenchHints()
@@ -194,7 +194,7 @@ private struct MainWindow: View {
                         if showProgress { ProgressView().controlSize(.mini).accessibilityHidden(true) }
                         else { Image(systemName: "plus").font(.system(size: 12, weight: .medium)) }
                     }
-                    .frame(width: 28, height: 30)
+                    .frame(width: WorkbenchLayout.controlHeight, height: WorkbenchLayout.controlHeight)
                     .contentShape(Rectangle())
                 }
                 .buttonStyle(WorkbenchIconButton(keepsEnabledAppearance: desk.loading))
@@ -203,6 +203,7 @@ private struct MainWindow: View {
                 .workbenchHint("Открыть репозитории", shortcut: KeyboardShortcut("o"))
             }
         }
+        .frame(height: WorkbenchLayout.controlHeight)
         .coordinateSpace(name: tabCoordinateSpace)
         .onPreferenceChange(ProjectTabFrames.self) { tabFrames = $0 }
     }
@@ -223,10 +224,10 @@ private struct MainWindow: View {
                     .truncationMode(.middle)
                     .padding(.leading, 9)
                     .padding(.trailing, 4)
-                    .frame(height: 30)
+                    .frame(height: WorkbenchLayout.controlHeight)
                     .contentShape(Rectangle())
             }
-            .buttonStyle(.plain)
+            .buttonStyle(WorkbenchPlainButton())
             .help(tab.root.path)
             .accessibilityAddTraits(selected ? .isSelected : [])
             .overlay {
@@ -250,7 +251,7 @@ private struct MainWindow: View {
                         if showProgress { ProgressView().controlSize(.mini).accessibilityHidden(true) }
                         else { Image(systemName: "xmark").font(.system(size: 8, weight: .semibold)) }
                     }
-                    .frame(width: 23, height: 30)
+                    .frame(width: 23, height: WorkbenchLayout.controlHeight)
                     .contentShape(Rectangle())
                 }
                 .buttonStyle(WorkbenchIconButton(keepsEnabledAppearance: indexing))
@@ -262,7 +263,7 @@ private struct MainWindow: View {
         }
         .foregroundStyle(selected ? Palette.text : Palette.muted)
         .frame(maxWidth: 210)
-        .background(selected ? Palette.selection : .clear, in: RoundedRectangle(cornerRadius: 5))
+        .workbenchRowBackground(selected: selected, radius: 5)
         .contentShape(Rectangle())
         .background {
             GeometryReader { geometry in
@@ -272,7 +273,7 @@ private struct MainWindow: View {
         }
         .overlay {
             if tabDropTarget == tab.id {
-                RoundedRectangle(cornerRadius: 5).strokeBorder(Palette.accentBorder).allowsHitTesting(false)
+                RoundedRectangle(cornerRadius: 5).strokeBorder(Palette.focusBorder).allowsHitTesting(false)
             }
         }
         .contextMenu {

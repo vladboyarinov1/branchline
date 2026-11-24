@@ -255,7 +255,7 @@ struct TerminalDockView: View {
                         .frame(height: 26)
                         .contentShape(Rectangle())
                 }
-                .buttonStyle(.plain)
+                .buttonStyle(WorkbenchPlainButton())
                 .accessibilityLabel(session.title)
                 .accessibilityValue(session.status ?? "Активен")
                 .accessibilityAddTraits(active ? .isSelected : [])
@@ -272,7 +272,7 @@ struct TerminalDockView: View {
                 .accessibilityLabel("Закрыть сеанс \(session.title)")
                 .workbenchHint("Закрыть сеанс")
             }
-            .background(active ? Palette.selection : .clear, in: RoundedRectangle(cornerRadius: 5))
+            .workbenchRowBackground(selected: active, radius: 5)
         }
     }
 

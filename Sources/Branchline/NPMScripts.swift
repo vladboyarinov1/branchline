@@ -41,7 +41,7 @@ struct NPMRunControl: View {
                 }
                 .menuStyle(.borderlessButton)
                 .fixedSize()
-                .frame(height: 28)
+                .frame(height: WorkbenchLayout.controlHeight)
                 .padding(.leading, 9)
                 .accessibilityLabel("npm-скрипт")
                 .accessibilityValue(selected)
@@ -51,9 +51,10 @@ struct NPMRunControl: View {
                     Image(systemName: "play.fill")
                         .font(.system(size: 10, weight: .semibold))
                         .foregroundStyle(workspace.terminalDock?.isRunningScript == true ? Palette.disabled : Palette.green)
-                        .frame(width: 27, height: 28)
+                        .frame(width: 28, height: WorkbenchLayout.controlHeight)
                 }
-                .buttonStyle(.plain)
+                .buttonStyle(WorkbenchPlainButton())
+                .workbenchRowBackground(radius: 6)
                 .accessibilityLabel("Запустить npm: \(selected)")
                 .workbenchHint("npm run \(selected)")
                 .disabled(workspace.terminalDock?.isRunningScript == true || workspace.activity != nil)

@@ -276,7 +276,7 @@ private struct GitPickerSearch: View {
                         .frame(width: 20, height: 24)
                         .contentShape(Rectangle())
                 }
-                .buttonStyle(.plain)
+                .buttonStyle(WorkbenchPlainButton())
                 .accessibilityLabel("Очистить поиск")
                 .workbenchHint("Очистить поиск")
             }
@@ -285,7 +285,7 @@ private struct GitPickerSearch: View {
         .padding(.horizontal, 8)
         .frame(height: 30)
         .background(Palette.base, in: RoundedRectangle(cornerRadius: 6))
-        .overlay { RoundedRectangle(cornerRadius: 6).strokeBorder(focused ? Palette.accentBorder : Palette.stroke) }
+        .overlay { RoundedRectangle(cornerRadius: 6).strokeBorder(focused ? Palette.focusBorder : Palette.stroke) }
         .onAppear { focused = true }
     }
 }

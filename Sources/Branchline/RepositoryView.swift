@@ -66,14 +66,16 @@ struct RepositoryView<ProjectTabs: View>: View {
     var body: some View {
         VStack(spacing: 0) {
             workspaceBar
-            if let operation = workspace.operation { operationBar(operation) }
-            HStack(alignment: .top, spacing: 3) {
+            if let operation = workspace.operation {
+                operationBar(operation).padding(.bottom, WorkbenchLayout.gutter)
+            }
+            HStack(alignment: .top, spacing: 0) {
                 toolStrip
                 workArea
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
                     .padding(.trailing, WorkbenchLayout.gutter)
             }
-            .padding(.vertical, WorkbenchLayout.gutter)
+            .padding(.bottom, WorkbenchLayout.gutter)
         }
         .background(Palette.workbench)
         .alert(workspace.notice?.title ?? "", isPresented: Binding(
@@ -171,8 +173,7 @@ struct RepositoryView<ProjectTabs: View>: View {
                 GitGlyph.branch.glyph(size: 16)
             }
         }
-        .padding(.horizontal, 3)
-        .frame(width: 38)
+        .frame(width: WorkbenchLayout.toolStripWidth)
     }
 
     private func tool<Icon: View>(_ title: String, active: Bool, shortcut: KeyboardShortcut? = nil,
@@ -180,7 +181,7 @@ struct RepositoryView<ProjectTabs: View>: View {
         Button(action: action) {
             icon()
                 .font(.system(size: 14, weight: .medium))
-                .frame(width: 30, height: 30)
+                .frame(width: WorkbenchLayout.controlHeight, height: WorkbenchLayout.controlHeight)
         }
         .buttonStyle(WorkbenchIconButton(selected: active))
         .workbenchHint(title, shortcut: shortcut)
@@ -266,8 +267,7 @@ struct RepositoryView<ProjectTabs: View>: View {
                 .accessibilityLabel("Создать ветку")
                 .workbenchHint("Создать ветку")
             }
-            .padding(.leading, 7)
-            .padding(.trailing, 3)
+            .padding(.horizontal, WorkbenchLayout.panelInset)
             .padding(.vertical, 4)
             ScrollView {
                 LazyVStack(alignment: .leading, spacing: 4) {
@@ -307,10 +307,10 @@ struct RepositoryView<ProjectTabs: View>: View {
                 .foregroundStyle(selected ? Palette.text : Palette.muted)
                 .padding(.horizontal, 8)
                 .frame(height: 24)
-                .background(selected ? Palette.selection : .clear, in: RoundedRectangle(cornerRadius: 4))
+                .workbenchRowBackground(selected: selected)
                 .contentShape(Rectangle())
         }
-        .buttonStyle(.plain)
+        .buttonStyle(WorkbenchPlainButton())
         .help(title)
         .accessibilityLabel(title)
         .accessibilityAddTraits(selected ? .isSelected : [])
@@ -369,10 +369,10 @@ struct RepositoryView<ProjectTabs: View>: View {
             .font(.system(size: 12, weight: ref.isCurrent ? .semibold : .regular))
             .padding(.leading, indent).padding(.trailing, 8)
             .frame(height: 26)
-            .background(selected ? Palette.selection : .clear, in: RoundedRectangle(cornerRadius: 5))
+            .workbenchRowBackground(selected: selected, radius: 5)
             .contentShape(Rectangle())
         }
-        .buttonStyle(.plain)
+        .buttonStyle(WorkbenchPlainButton())
         .help(ref.name)
         .accessibilityValue(ref.tracking.accessibilitySummary)
         .accessibilityAddTraits(selected ? .isSelected : [])
@@ -393,7 +393,7 @@ struct RepositoryView<ProjectTabs: View>: View {
         let cancelling = workspace.isCancellingNetworkOperation ? workspace.networkOperation?.rawValue : nil
         let progress = workspace.isUpdatingIndex ? nil
             : (cancelling.map { "Отменяем \($0)" } ?? workspace.activity ?? (loadingRemotes ? "Читаем список remote" : nil))
-        return HStack(spacing: 7) {
+        return HStack(alignment: .center, spacing: 6) {
             projectTabs
                 .padding(.leading, 78)
                 .layoutPriority(1)
@@ -473,7 +473,7 @@ struct RepositoryView<ProjectTabs: View>: View {
                            shortcut: runningPush ? nil : GitKeymap.push)
         }
         .font(.system(size: 11, weight: .medium))
-        .padding(.trailing, 9)
+        .padding(.trailing, WorkbenchLayout.gutter)
         .frame(height: WorkbenchLayout.titleHeight)
         .background(Palette.header)
     }
@@ -518,7 +518,7 @@ struct RepositoryView<ProjectTabs: View>: View {
     }
 
     private func content(height: CGFloat) -> some View {
-        let inset = WorkbenchLayout.gutter / 2
+        let inset = WorkbenchLayout.splitInset
         let comparing = workspace.comparedRef != nil
         let showsSidebar = comparing || projectVisible || workspace.commitToolVisible
         let sidebarWidth: (min: CGFloat, ideal: CGFloat, max: CGFloat) = comparing ? (162, 184, 235) : (244, 276, 310)
@@ -726,7 +726,7 @@ struct RepositoryView<ProjectTabs: View>: View {
                         .frame(width: 15, height: 24)
                         .contentShape(Rectangle())
                 }
-                .buttonStyle(.plain)
+                .buttonStyle(WorkbenchPlainButton())
                 .accessibilityLabel(expanded ? "Свернуть \(title)" : "Раскрыть \(title)")
                 if case .working = context {
                     inclusionGroupCheckbox(files, label: title)
@@ -744,7 +744,7 @@ struct RepositoryView<ProjectTabs: View>: View {
                     .frame(height: 24)
                     .contentShape(Rectangle())
                 }
-                .buttonStyle(.plain)
+                .buttonStyle(WorkbenchPlainButton())
                 .accessibilityValue(expanded ? "Развёрнуто" : "Свёрнуто")
             }
             .padding(.trailing, WorkbenchLayout.panelInset / 2)
@@ -827,16 +827,16 @@ struct RepositoryView<ProjectTabs: View>: View {
                 .frame(height: 26)
                 .contentShape(Rectangle())
             }
-            .buttonStyle(.plain)
+            .buttonStyle(WorkbenchPlainButton())
             .help(change.map { "\($0.label) · \(path)" } ?? path)
             .accessibilityValue(change?.label ?? "")
             .accessibilityAddTraits(selected ? .isSelected : [])
         }
-        .background(selected ? Palette.selection : .clear, in: RoundedRectangle(cornerRadius: 4))
+        .workbenchRowBackground(selected: selected)
         .overlay {
             if selected && changesFocused && context.isWorkingFile {
                 RoundedRectangle(cornerRadius: 4)
-                    .strokeBorder(Palette.accentBorder, lineWidth: 1)
+                    .strokeBorder(Palette.focusBorder, lineWidth: 1)
                     .allowsHitTesting(false)
             }
         }
@@ -996,7 +996,7 @@ struct RepositoryView<ProjectTabs: View>: View {
                 Spacer(minLength: 1)
                 Button(detail.commit.shortHash) { workspace.copy(detail.commit.hash) }
                     .font(.system(size: 10, weight: .medium, design: .monospaced))
-                    .buttonStyle(.plain)
+                    .buttonStyle(WorkbenchPlainButton())
                     .foregroundStyle(Palette.accent)
                     .workbenchHint("Скопировать SHA")
                     .accessibilityLabel("Скопировать SHA \(detail.commit.shortHash)")
@@ -1504,7 +1504,7 @@ private struct RefGroup<Content: View>: View {
                 .frame(height: 24)
                 .contentShape(Rectangle())
             }
-            .buttonStyle(.plain)
+            .buttonStyle(WorkbenchPlainButton())
             .accessibilityValue(expanded ? "Развёрнуто" : "Свёрнуто")
             if expanded { content }
         }
