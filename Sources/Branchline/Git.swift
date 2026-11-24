@@ -27,9 +27,8 @@ struct GitFile: Identifiable, Hashable, Sendable {
     var originalPath: String? = nil
     var staged: GitChange? = nil
     var unstaged: GitChange? = nil
-    var previewRevision: String? = nil
 
-    var id: String { previewRevision.map { "\($0)\0\(path)" } ?? path }
+    var id: String { path }
     var name: String { path.split(separator: "/").last.map(String.init) ?? path }
     var directory: String { path.lastIndex(of: "/").map { String(path[..<$0]) } ?? "" }
 }
@@ -80,15 +79,6 @@ struct GitCommitDetail: Sendable {
 
 enum GitPatchContext: Hashable, Sendable {
     case staged, unstaged, working(unborn: Bool), commit(String), comparison(String)
-}
-
-struct GitStash: Identifiable, Hashable, Sendable {
-    let ref: String
-    let hash: String
-    let message: String
-    let date: Date
-
-    var id: String { ref }
 }
 
 enum GitResetMode: String, CaseIterable, Identifiable, Sendable {
@@ -170,7 +160,7 @@ enum GitError: LocalizedError {
         case .noUpstream: "У этой ветки ещё нет удалённой ветки для отправки."
         case .missingFetchedUpstream: "Не найдена отслеживаемая ветка. Проверьте её настройки и выполните Fetch."
         case .destinationChanged: "Текущая ветка или назначение изменились. Проверьте параметры и повторите действие."
-        case .dirtyWorktree: "Сначала сделайте коммит или сохраните локальные изменения в Stash."
+        case .dirtyWorktree: "Сначала сделайте коммит или выполните git stash в терминале."
         case .operationInProgress: "Сначала завершите текущую Git-операцию."
         case .operationChanged: "Состояние Git изменилось. Обновите репозиторий и повторите действие."
         }
@@ -382,7 +372,7 @@ struct Git: Sendable {
         case .working(let unborn):
             return try await workingPatch(file, unborn: unborn, options: diffOptions, paths: paths)
         case .commit(let hash):
-            options = ["show", "--format=", "--diff-merges=first-parent", "-p"] + diffOptions + ["--end-of-options", file.previewRevision ?? hash]
+            options = ["show", "--format=", "--diff-merges=first-parent", "-p"] + diffOptions + ["--end-of-options", hash]
         case .comparison(let ref):
             options = ["diff"] + diffOptions + ["--end-of-options", "HEAD", ref]
         }
@@ -707,39 +697,6 @@ struct Git: Sendable {
     private func commitHash(_ revision: String) async throws -> String? {
         let result = try await read(["rev-parse", "--verify", "--quiet", "--end-of-options", "\(revision)^{commit}"], allowed: [0, 1])
         return result.status == 0 ? result.string.trimmingCharacters(in: .newlines) : nil
-    }
-
-    func stashes() async throws -> [GitStash] {
-        let result = try await read(["stash", "list", "-z", "--format=%gd%x00%H%x00%at%x00%s"])
-        let fields = Self.fields(result.data)
-        guard fields.count.isMultiple(of: 4) else { throw GitError.invalidResponse }
-        return try stride(from: 0, to: fields.count, by: 4).map { index in
-            guard let seconds = TimeInterval(fields[index + 2]) else { throw GitError.invalidResponse }
-            return GitStash(ref: fields[index], hash: fields[index + 1], message: fields[index + 3],
-                            date: Date(timeIntervalSince1970: seconds))
-        }
-    }
-
-    func stashDetails(_ stash: GitStash) async throws -> GitCommitDetail {
-        let stored = try await details(stash.hash)
-        guard stored.commit.parents.count == 3, let untrackedRevision = stored.commit.parents.last else { return stored }
-        let untracked = try await read(["show", "--format=", "--name-status", "-z", "--end-of-options", untrackedRevision, "--"])
-        let untrackedFiles = try Self.parseChanges(untracked.data).map { file in
-            GitFile(path: file.path, staged: .untracked, previewRevision: untrackedRevision)
-        }
-        return GitCommitDetail(commit: stored.commit, email: stored.email, message: stored.message, files: stored.files + untrackedFiles)
-    }
-
-    func stash(_ message: String = "") async throws {
-        var options = ["stash", "push", "--include-untracked"]
-        if !message.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-            options += ["--message", message]
-        }
-        try await write(options)
-    }
-
-    func applyStash(_ stash: GitStash) async throws {
-        try await write(["stash", "apply", "--index", stash.hash])
     }
 
     private func exactLog(_ hash: String, options: [String], skip: Int, limit: Int, path: String?, ref: String?) async throws -> [GitCommit] {

@@ -7,7 +7,6 @@ struct NameSheet: View {
     let icon: String
     let subtitle: String
     var showCheckout = false
-    var allowEmpty = false
     var initialValue = ""
     let action: (String, Bool) -> Void
 
@@ -17,7 +16,7 @@ struct NameSheet: View {
     @FocusState private var focused: Bool
 
     private var name: String { text.trimmingCharacters(in: .whitespacesAndNewlines) }
-    private var canSubmit: Bool { allowEmpty || (!name.isEmpty && name != initialValue) }
+    private var canSubmit: Bool { !name.isEmpty && name != initialValue }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {

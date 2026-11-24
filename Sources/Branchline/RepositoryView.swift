@@ -17,8 +17,8 @@ struct RepositoryView<ProjectTabs: View>: View {
     @State private var workingReveal: FileFocus.ID?
     @State private var collapsedGroups: Set<ChangeGroup> = []
     @AppStorage("branchline.terminal.height") private var terminalHeight = 270.0
-    @State private var historyHeight: CGFloat = 270
-    @State private var dockDragHeight: CGFloat?
+    @AppStorage("branchline.history.height") private var historyHeight = 270.0
+    @State private var dockDrag: (dock: BottomDock, height: CGFloat)?
     @FocusState private var changesFocused: Bool
 
     init(workspace: Workspace, @ViewBuilder projectTabs: () -> ProjectTabs) {
@@ -35,13 +35,12 @@ struct RepositoryView<ProjectTabs: View>: View {
     }
 
     private enum ActionSheet: Identifiable {
-        case branch(GitRef?), rename(GitRef), stash, push(PushDestination, [String]), actions(Bool), branches, keymap
+        case branch(GitRef?), rename(GitRef), push(PushDestination, [String]), actions(Bool), branches, keymap
         case editFile(URL, String), reset(HistoryEntry, branch: String, head: String)
         var id: Int {
             switch self {
             case .branch: 0
             case .rename: 1
-            case .stash: 2
             case .push: 3
             case .actions: 4
             case .branches: 5
@@ -110,11 +109,6 @@ struct RepositoryView<ProjectTabs: View>: View {
                           icon: "pencil", subtitle: "Локальная ветка «\(ref.name)».", initialValue: ref.name) {
                     name, _ in if name != ref.name { workspace.renameBranch(ref, to: name) }
                 }
-            case .stash:
-                NameSheet(title: "Сохранить в stash", prompt: "Описание", submit: "Сохранить",
-                          icon: "archivebox", subtitle: "Включает новые и изменённые файлы.", allowEmpty: true) {
-                    name, _ in workspace.stash(name)
-                }
             case .push(let destination, let remotes):
                 if let git = workspace.git {
                     PushSheet(branch: destination.branch, upstream: destination.upstream, remotes: remotes, load: { remote in
@@ -169,11 +163,6 @@ struct RepositoryView<ProjectTabs: View>: View {
                  shortcut: GitKeymap.commitToolWindow, action: { handle(.commitTool) }) {
                 GitGlyph.commit.glyph(size: 16)
             }
-            tool("Stash", active: workspace.mode == .stash, action: {
-                workspace.activate(workspace.mode == .stash ? .changes : .stash)
-            }) {
-                Image(systemName: "archivebox")
-            }
             Spacer(minLength: 0)
             tool("Terminal", active: terminalVisible, shortcut: GitKeymap.terminal, action: { handle(.terminal) }) {
                 Image(systemName: "terminal")
@@ -206,41 +195,56 @@ struct RepositoryView<ProjectTabs: View>: View {
         workspace.mode == .history && workspace.historyToolVisible && workspace.comparedRef == nil && !terminalVisible
     }
 
+    private enum BottomDock {
+        case terminal, history
+
+        var dividerLabel: String { self == .terminal ? "Высота терминала" : "Высота Git Log" }
+    }
+
+    private var activeDock: BottomDock? {
+        if terminalVisible { return .terminal }
+        if historyVisible { return .history }
+        return nil
+    }
+
     private var workArea: some View {
         GeometryReader { geometry in
-            let showsDock = terminalVisible || historyVisible
-            let gap = showsDock ? WorkbenchLayout.gutter : 0
-            let maxDockHeight = max(0, geometry.size.height - gap - 230)
-            let limits = min(190, maxDockHeight)...maxDockHeight
-            let preferredHeight = terminalVisible ? CGFloat(terminalHeight) : historyHeight
-            let height = showsDock ? min(max(dockDragHeight ?? preferredHeight, limits.lowerBound), limits.upperBound) : 0
+            let dock = activeDock
+            let gap = dock == nil ? 0 : WorkbenchLayout.gutter
+            let maximumHeight = max(0, geometry.size.height - gap - 230)
+            let limits = min(190, maximumHeight)...maximumHeight
+            let preferredHeight = CGFloat(dock == .terminal ? terminalHeight : historyHeight)
+            let dragHeight = dockDrag?.dock == dock ? dockDrag?.height : nil
+            let height = dock == nil ? 0 : min(max(dragHeight ?? preferredHeight, limits.lowerBound), limits.upperBound)
             VStack(spacing: 0) {
                 content(height: max(0, geometry.size.height - height - gap))
-                if showsDock {
-                    WorkbenchDockDivider(height: height, limits: limits,
-                                         label: terminalVisible ? "Высота терминала" : "Высота Git Log") { proposed, finished in
+                if let dock {
+                    WorkbenchDockDivider(height: height, limits: limits, label: dock.dividerLabel) { proposed, finished in
                         let newHeight = min(max(proposed, limits.lowerBound), limits.upperBound)
                         if finished {
-                            if terminalVisible { terminalHeight = Double(newHeight) }
-                            else { historyHeight = newHeight }
-                            dockDragHeight = nil
+                            if dock == .terminal { terminalHeight = Double(newHeight) }
+                            else { historyHeight = Double(newHeight) }
+                            dockDrag = nil
                         } else {
-                            dockDragHeight = newHeight
+                            dockDrag = (dock, newHeight)
                         }
                     }
                     .frame(height: gap)
+                    .id(dock)
                     panel {
-                        Group {
-                            if let dock = workspace.terminalDock, dock.visible { TerminalDockView(dock: dock) }
-                            else { logDock }
+                        ZStack(alignment: .top) {
+                            if dock == .terminal, let terminal = workspace.terminalDock {
+                                TerminalDockView(dock: terminal)
+                            } else {
+                                logDock(height: height)
+                            }
                         }
-                        .frame(height: height, alignment: .top)
+                        .frame(width: geometry.size.width, height: height, alignment: .top)
                     }
                 }
             }
         }
-        .onChange(of: terminalVisible) { _, _ in dockDragHeight = nil }
-        .onChange(of: historyVisible) { _, _ in dockDragHeight = nil }
+        .onChange(of: activeDock) { _, _ in dockDrag = nil }
     }
 
     private var branchPane: some View {
@@ -511,10 +515,8 @@ struct RepositoryView<ProjectTabs: View>: View {
     private func content(height: CGFloat) -> some View {
         let inset = WorkbenchLayout.gutter / 2
         let comparing = workspace.comparedRef != nil
-        let showingStash = workspace.mode == .stash
-        let showsSidebar = comparing || showingStash || projectVisible || workspace.commitToolVisible
-        let sidebarWidth: (min: CGFloat, ideal: CGFloat, max: CGFloat) = comparing ? (162, 184, 235)
-            : showingStash ? (235, 282, 370) : (244, 276, 310)
+        let showsSidebar = comparing || projectVisible || workspace.commitToolVisible
+        let sidebarWidth: (min: CGFloat, ideal: CGFloat, max: CGFloat) = comparing ? (162, 184, 235) : (244, 276, 310)
 
         // NSSplitView measures newly inserted panes at their ideal size during tool switches.
         // Pass the work area's height to the panes themselves so their canvas stays full-height.
@@ -523,7 +525,6 @@ struct RepositoryView<ProjectTabs: View>: View {
                 panel {
                     Group {
                         if comparing { branchPane }
-                        else if showingStash { stashPane }
                         else if let project = workspace.projectFiles, projectVisible {
                             ProjectFilesView(model: project, onEdit: editFile)
                         } else { changesPane }
@@ -550,9 +551,13 @@ struct RepositoryView<ProjectTabs: View>: View {
         .paintWorkbenchGutter()
     }
 
-    private var logDock: some View {
+    private func logDock(height: CGFloat) -> some View {
         HSplitView {
-            if branchesVisible { branchPane.frame(minWidth: 154, idealWidth: 182, maxWidth: 225) }
+            if branchesVisible {
+                branchPane
+                    .frame(minWidth: 154, idealWidth: 182, maxWidth: 225)
+                    .frame(height: height)
+            }
             HistoryView(entries: workspace.entries, title: workspace.historyTitle,
                         search: $workspace.search, selection: Binding(
                             get: { workspace.selection }, set: { workspace.selectCommit($0) }
@@ -566,7 +571,10 @@ struct RepositoryView<ProjectTabs: View>: View {
                         pageError: workspace.historyPageError,
                         scopeID: workspace.scope, retryLoad: { workspace.refresh(userInitiated: true) })
                 .frame(minWidth: 300, maxWidth: .infinity)
-            inspector.frame(minWidth: 210, idealWidth: 242, maxWidth: 305)
+                .frame(height: height)
+            inspector
+                .frame(minWidth: 210, idealWidth: 242, maxWidth: 305)
+                .frame(height: height)
         }
         .background(Palette.panel)
     }
@@ -897,7 +905,7 @@ struct RepositoryView<ProjectTabs: View>: View {
                     .buttonStyle(StudioButton())
                     .workbenchHint("Открыть Git Log", shortcut: GitKeymap.log)
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
-            } else if workspace.isDetailLoading || workspace.isExtrasLoading || !workspace.hasWorkingStatus {
+            } else if workspace.isDetailLoading || !workspace.hasWorkingStatus {
                 Color.clear.accessibilityHidden(true)
             } else {
                 Text("Выберите файл")
@@ -1054,72 +1062,6 @@ struct RepositoryView<ProjectTabs: View>: View {
         .background(Palette.panel)
     }
 
-    private var stashPane: some View {
-        VStack(spacing: 0) {
-            HStack {
-                Text("Stash").font(.system(size: 12, weight: .semibold))
-                Spacer()
-                Button("Сохранить…") { sheet = .stash }
-                    .buttonStyle(StudioButton())
-                    .disabled(workspace.status?.files.isEmpty != false || workspace.activity != nil || workspace.operation != nil)
-            }
-            .padding(.horizontal, 12).frame(height: 42)
-            StudioRule()
-            if workspace.stashes.isEmpty {
-                if let error = workspace.detailError {
-                    Text(error).font(.system(size: 11)).foregroundStyle(Palette.muted)
-                        .padding(WorkbenchLayout.panelInset)
-                        .frame(maxWidth: .infinity, maxHeight: .infinity)
-                } else if workspace.hasLoadedStashes {
-                    Text("Stash пуст")
-                        .font(.system(size: 12)).foregroundStyle(Palette.muted)
-                        .frame(maxWidth: .infinity, maxHeight: .infinity)
-                } else {
-                    loadingBody("Загружаем stash")
-                }
-            } else {
-                ScrollView {
-                    LazyVStack(spacing: 6) {
-                        ForEach(workspace.stashes) { stash in
-                            Button { workspace.selectStash(stash) } label: {
-                                VStack(alignment: .leading, spacing: 4) {
-                                    Text(stash.message).font(.system(size: 12, weight: .semibold))
-                                        .lineLimit(2)
-                                    Text("\(stash.ref) · \(stash.date.formatted(date: .abbreviated, time: .omitted))")
-                                        .font(.system(size: 10, design: .monospaced)).foregroundStyle(Palette.muted)
-                                }.frame(maxWidth: .infinity, alignment: .leading)
-                                    .padding(8)
-                                    .background(workspace.selectedStash?.id == stash.id ? Palette.selection : .clear,
-                                                in: RoundedRectangle(cornerRadius: 5))
-                                    .contentShape(Rectangle())
-                            }
-                            .buttonStyle(.plain)
-                            .help(stash.message)
-                            .accessibilityAddTraits(workspace.selectedStash?.id == stash.id ? .isSelected : [])
-                        }
-                        if let stash = workspace.selectedStash {
-                            Button("Применить снимок") { workspace.apply(stash) }
-                                .buttonStyle(StudioButton())
-                                .disabled(workspace.activity != nil || workspace.isDetailLoading)
-                            StudioRule()
-                            if let detail = workspace.detail {
-                                let locked = workspace.isDetailLoading || detail.commit.hash != stash.hash
-                                ForEach(detail.files) { file in
-                                    fileRow(file, context: .commit(detail.commit.hash), change: file.staged ?? file.unstaged)
-                                        .allowsHitTesting(!locked)
-                                        .accessibilityHidden(locked)
-                                }
-                            } else if let error = workspace.detailError {
-                                Text(error).font(.system(size: 11)).foregroundStyle(Palette.red)
-                            }
-                        }
-                    }
-                    .padding(8)
-                }
-            }
-        }.background(Palette.panel)
-    }
-
     private func paneHeading(_ title: String) -> some View {
         Text(title)
             .font(.system(size: 12, weight: .semibold))
@@ -1201,11 +1143,6 @@ struct RepositoryView<ProjectTabs: View>: View {
                           $0.context.isWorkingFile && $0.context != .staged && allowsRollback($0.file)
                       } == true) {
                 handle(.rollback)
-            },
-            GitAction(title: "Stash Changes…", detail: "Временно сохранить рабочие изменения", icon: "archivebox",
-                      enabled: mutable && workspace.operation == nil && workspace.status?.files.isEmpty == false) {
-                workspace.activate(.stash)
-                sheet = .stash
             },
             GitAction(title: "Keyboard Shortcuts", detail: "Справка по горячим клавишам", icon: "keyboard") { sheet = .keymap },
         ]
@@ -1306,7 +1243,7 @@ struct RepositoryView<ProjectTabs: View>: View {
         case .commit:
             handledDiffFocus = diffFocusRequest
             workspace.projectFiles?.visible = false
-            if workspace.mode == .stash || workspace.comparedRef != nil {
+            if workspace.comparedRef != nil {
                 workspace.activate(.changes)
             }
             workspace.commitToolVisible = true
@@ -1315,7 +1252,7 @@ struct RepositoryView<ProjectTabs: View>: View {
             if projectVisible {
                 workspace.projectFiles?.visible = false
                 workspace.commitToolVisible = true
-            } else if workspace.mode == .stash || workspace.comparedRef != nil {
+            } else if workspace.comparedRef != nil {
                 workspace.activate(.changes)
                 workspace.commitToolVisible = true
             } else {
@@ -1347,7 +1284,7 @@ struct RepositoryView<ProjectTabs: View>: View {
             if projectVisible {
                 workspace.projectFiles?.visible = false
             } else if let root = workspace.git?.root {
-                if workspace.mode == .stash || workspace.comparedRef != nil {
+                if workspace.comparedRef != nil {
                     workspace.activate(.changes)
                 }
                 if workspace.projectFiles == nil { workspace.projectFiles = ProjectFilesModel(root: root) }

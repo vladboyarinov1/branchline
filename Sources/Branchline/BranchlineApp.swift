@@ -70,7 +70,6 @@ struct BranchlineApp: App {
                 gitCommand("VCS Operations Popup", action: .vcsActions, shortcut: GitKeymap.vcsOperations)
                 gitCommand("Find Action…", action: .findAction, shortcut: GitKeymap.findAction)
                 Button("Branches…") { desk.active?.send(.branches) }.disabled(desk.active == nil)
-                Button("Stash") { desk.active?.activate(.stash) }.disabled(desk.active == nil)
                 Button("Keyboard Shortcuts") { desk.active?.send(.keymap) }.disabled(desk.active == nil)
             }
             CommandGroup(after: .toolbar) {

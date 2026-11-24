@@ -5,13 +5,11 @@ import Observation
 enum WorkspaceMode: String, CaseIterable {
     case changes = "Изменения"
     case history = "История"
-    case stash = "Stash"
 
     var icon: String {
         switch self {
         case .changes: "doc.badge.ellipsis"
         case .history: "clock.arrow.circlepath"
-        case .stash: "archivebox"
         }
     }
 }
@@ -73,7 +71,6 @@ final class Workspace {
     @ObservationIgnored private var historyTracking: HistoryTracking?
 
     private struct DetailRequest: Equatable {
-        let mode: WorkspaceMode
         let hash: String
         let preferred: FileFocus.ID?
         let updatePreview: Bool
@@ -121,9 +118,6 @@ final class Workspace {
     private(set) var detail: GitCommitDetail?
     private(set) var comparedRef: GitRef?
     private(set) var comparedFiles: [GitFile] = []
-    private(set) var stashes: [GitStash] = []
-    private(set) var hasLoadedStashes = false
-    private(set) var selectedStash: GitStash?
     private(set) var focus: FileFocus?
     private(set) var diffSource: DiffSource?
     var patch: String? { diffSource?.patch }
@@ -146,7 +140,6 @@ final class Workspace {
     private(set) var historyError: String?
     private(set) var historyPageError: String?
     private(set) var isDetailLoading = false
-    private(set) var isExtrasLoading = false
     private(set) var hasMore = false
     var branchFilter = ""
     var commitMessage = "" {
@@ -169,7 +162,6 @@ final class Workspace {
     @ObservationIgnored private var commonGitDirectory: URL?
     @ObservationIgnored private var draftKey: String?
     @ObservationIgnored private var networkTask: Task<Void, Error>?
-    @ObservationIgnored private var extrasTask: Task<Void, Never>?
     @ObservationIgnored private var restoreHistoryCount = 0
     @ObservationIgnored private var historyOffset = 0
     @ObservationIgnored private var loadedHistoryQuery: HistoryQuery?
@@ -289,8 +281,6 @@ final class Workspace {
             historyTask = nil
             cancelDetailRead()
             cancelPatchRead()
-            extrasTask?.cancel()
-            isExtrasLoading = false
             isHistoryLoading = false
             isHistoryReplacing = false
             projectFiles?.pauseLoads()
@@ -362,8 +352,6 @@ final class Workspace {
         refs = []
         status?.files = []
         detail = nil
-        stashes = []
-        hasLoadedStashes = false
         diffSource = nil
         patchError = nil
         projectFiles?.suspend()
@@ -407,7 +395,6 @@ final class Workspace {
         case .history:
             historyToolVisible = true
             queueHistory()
-        case .stash: refreshStashes()
         }
     }
 
@@ -419,8 +406,6 @@ final class Workspace {
         historyTask?.cancel()
         historyTask = nil
         cancelDetailRead()
-        extrasTask?.cancel()
-        isExtrasLoading = false
         isHistoryLoading = false
         isHistoryReplacing = false
         historyError = nil
@@ -552,7 +537,6 @@ final class Workspace {
                 (sawHead || sawRefs || (entries.isEmpty && historyTask == nil) || userInitiated) {
                 queueHistory(replacing: isHistoryReplacing)
             }
-            if mode == .stash { refreshStashes() }
         }
     }
 
@@ -746,9 +730,7 @@ final class Workspace {
             if updatePreview { previewDetail(detail, preferred: preferred) }
             return
         }
-        loadDetail(hash: selection, preferred: preferred, updatePreview: updatePreview) { git in
-            try await git.details(selection)
-        }
+        loadDetail(hash: selection, preferred: preferred, updatePreview: updatePreview)
     }
 
     private func cancelDetailRead() {
@@ -758,10 +740,9 @@ final class Workspace {
         isDetailLoading = false
     }
 
-    private func loadDetail(hash: String, preferred: FileFocus?, updatePreview: Bool = true,
-                            read: @escaping (Git) async throws -> GitCommitDetail) {
+    private func loadDetail(hash: String, preferred: FileFocus?, updatePreview: Bool) {
         guard isFront, let git else { return }
-        let request = DetailRequest(mode: mode, hash: hash, preferred: preferred?.id,
+        let request = DetailRequest(hash: hash, preferred: preferred?.id,
                                     updatePreview: updatePreview, fileRevision: fileSelectionRevision)
         guard !isDetailLoading || request != detailRequest else { return }
         detailTask?.cancel()
@@ -777,7 +758,7 @@ final class Workspace {
                 }
             }
             do {
-                let result = try await read(git)
+                let result = try await git.details(hash)
                 try Task.checkCancellation()
                 guard isCurrentDetail(request, at: git.root) else { return }
                 detail = result
@@ -795,12 +776,8 @@ final class Workspace {
     }
 
     private func isCurrentDetail(_ request: DetailRequest, at root: URL) -> Bool {
-        guard isFront, mode == request.mode, git?.root == root, detailRequest == request else { return false }
-        return switch request.mode {
-        case .history: comparedRef == nil && selection == request.hash
-        case .stash: selectedStash?.hash == request.hash
-        default: false
-        }
+        isFront && mode == .history && comparedRef == nil && selection == request.hash &&
+            git?.root == root && detailRequest == request
     }
 
     private func previewDetail(_ detail: GitCommitDetail, preferred: FileFocus?) {
@@ -1105,7 +1082,6 @@ final class Workspace {
             } else {
                 try await git.commit(message, amend: amend)
             }
-            if self.commitMessage == message { self.commitMessage = "" }
             self.amend = false
             self.commitAndPushPending = pushAfter
         }
@@ -1170,58 +1146,6 @@ final class Workspace {
                 throw GitError.command("Сохраните изменения в «\(failed.path)» и повторите сброс.")
             }
             try await git.reset(to: hash, mode: mode, expectedBranch: branch, expectedHead: head)
-        }
-    }
-
-    func stash(_ message: String) {
-        perform("Сохраняем изменения", success: "Изменения сохранены в stash") { try await $0.stash(message) }
-    }
-
-    func apply(_ stash: GitStash) {
-        perform("Применяем stash", success: "Stash применён") { try await $0.applyStash(stash) }
-    }
-
-    func selectStash(_ value: GitStash) {
-        guard isFront, mode == .stash, git != nil else { return }
-        let preferred = selectedStash?.hash == value.hash ? focus : nil
-        selectedStash = value
-        if let detail, detail.commit.hash == value.hash {
-            cancelDetailRead()
-            detailError = nil
-            previewDetail(detail, preferred: preferred)
-            return
-        }
-        loadDetail(hash: value.hash, preferred: preferred) { git in
-            try await git.stashDetails(value)
-        }
-    }
-
-    private func refreshStashes() {
-        guard let git, mode == .stash else { return }
-        extrasTask?.cancel()
-        isExtrasLoading = true
-        extrasTask = Task {
-            defer { if !Task.isCancelled { isExtrasLoading = false } }
-            do {
-                let result = try await git.stashes()
-                try Task.checkCancellation()
-                guard isFront, self.git?.root == git.root, mode == .stash else { return }
-                stashes = result
-                hasLoadedStashes = true
-                if let preferred = result.first(where: { $0.hash == selectedStash?.hash }) ?? result.first {
-                    if detail?.commit.hash != preferred.hash || patch == nil { selectStash(preferred) }
-                    else { selectedStash = preferred }
-                } else {
-                    cancelDetailRead()
-                    selectedStash = nil
-                    detail = nil
-                    detailError = nil
-                    if !focusIsWorkingFile { clearPreview() }
-                }
-            } catch is CancellationError {
-            } catch {
-                if isFront, !Task.isCancelled, self.git?.root == git.root, mode == .stash { detailError = error.localizedDescription }
-            }
         }
     }
 
