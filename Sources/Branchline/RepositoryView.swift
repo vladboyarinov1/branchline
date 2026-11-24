@@ -16,9 +16,8 @@ struct RepositoryView<ProjectTabs: View>: View {
     @State private var handledDiffFocus: UInt = 0
     @State private var workingReveal: FileFocus.ID?
     @State private var collapsedGroups: Set<ChangeGroup> = []
-    @AppStorage("branchline.terminal.height") private var terminalHeight = 270.0
-    @AppStorage("branchline.history.height") private var historyHeight = 270.0
-    @State private var dockDrag: (dock: BottomDock, height: CGFloat)?
+    @AppStorage("branchline.bottomDock.height") private var dockHeight = BottomDock.initialHeight
+    @State private var dockDragHeight: CGFloat?
     @FocusState private var changesFocused: Bool
 
     init(workspace: Workspace, @ViewBuilder projectTabs: () -> ProjectTabs) {
@@ -199,6 +198,13 @@ struct RepositoryView<ProjectTabs: View>: View {
         case terminal, history
 
         var dividerLabel: String { self == .terminal ? "Высота терминала" : "Высота Git Log" }
+
+        static var initialHeight: Double {
+            let defaults = UserDefaults.standard
+            return defaults.object(forKey: "branchline.terminal.height") as? Double
+                ?? defaults.object(forKey: "branchline.history.height") as? Double
+                ?? 270
+        }
     }
 
     private var activeDock: BottomDock? {
@@ -213,24 +219,21 @@ struct RepositoryView<ProjectTabs: View>: View {
             let gap = dock == nil ? 0 : WorkbenchLayout.gutter
             let maximumHeight = max(0, geometry.size.height - gap - 230)
             let limits = min(190, maximumHeight)...maximumHeight
-            let preferredHeight = CGFloat(dock == .terminal ? terminalHeight : historyHeight)
-            let dragHeight = dockDrag?.dock == dock ? dockDrag?.height : nil
-            let height = dock == nil ? 0 : min(max(dragHeight ?? preferredHeight, limits.lowerBound), limits.upperBound)
+            let preferredHeight = dockDragHeight ?? CGFloat(dockHeight)
+            let height = dock == nil ? 0 : min(max(preferredHeight, limits.lowerBound), limits.upperBound)
             VStack(spacing: 0) {
                 content(height: max(0, geometry.size.height - height - gap))
                 if let dock {
                     WorkbenchDockDivider(height: height, limits: limits, label: dock.dividerLabel) { proposed, finished in
                         let newHeight = min(max(proposed, limits.lowerBound), limits.upperBound)
                         if finished {
-                            if dock == .terminal { terminalHeight = Double(newHeight) }
-                            else { historyHeight = Double(newHeight) }
-                            dockDrag = nil
+                            dockHeight = Double(newHeight)
+                            dockDragHeight = nil
                         } else {
-                            dockDrag = (dock, newHeight)
+                            dockDragHeight = newHeight
                         }
                     }
                     .frame(height: gap)
-                    .id(dock)
                     panel {
                         ZStack(alignment: .top) {
                             if dock == .terminal, let terminal = workspace.terminalDock {
@@ -244,7 +247,9 @@ struct RepositoryView<ProjectTabs: View>: View {
                 }
             }
         }
-        .onChange(of: activeDock) { _, _ in dockDrag = nil }
+        .onChange(of: activeDock == nil) { _, hidden in
+            if hidden { dockDragHeight = nil }
+        }
     }
 
     private var branchPane: some View {
